@@ -1,69 +1,95 @@
 """
 config.py — Central configuration for the IDEAM radar pipeline.
-Edit this file to set your date range, sites, and storage paths.
+
+Quick-start: the two sections you'll edit most often are clearly marked below.
+All settings can also be overridden at runtime via CLI flags — see pipeline.py.
 """
 
 from datetime import datetime
 from pathlib import Path
 
-# ─────────────────────────────────────────────
-#  AWS S3 — IDEAM bucket (public, no credentials needed)
-# ─────────────────────────────────────────────
-S3_BUCKET_NAME = "s3-radaresideam"
-S3_BUCKET_URI  = f"s3://{S3_BUCKET_NAME}"
-S3_PREFIX      = "l2_data"          # top-level prefix inside the bucket
 
-# ─────────────────────────────────────────────
-#  All known IDEAM radar sites
-#  Format: full name as it appears in S3 paths
-# ─────────────────────────────────────────────
-RADAR_SITES = [
-    "Guaviare",
-    "Barrancabermeja",
-    "Bogota",
-    "Cali",
-    "Medellin",
-    "Manizales",
-    "Corozal",
-    "Mariquita",
-    "Mocoa",
-    "PuertoCarreño",
-    "Riohacha",
-    "SantaMarta",
-    "Valledupar",
-    "Villavicencio",
+# ═════════════════════════════════════════════════════════════════════════════
+#  ① WHAT TO PROCESS  (edit this regularly)
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Sites to process when no --sites flag is given.
+# Use the exact folder names that appear in the S3 bucket (case-sensitive).
+RADAR_SITES: list[str] = [
+    "Bogota",           # .nc.gz  — decompressed to .nc on download
+    "Corozal",          # .RAW*
+    "San_Andres",       # .RAW*
+    "Tablazo",          # .RAW*
+    "santa_elena",      # .nc
+    "Barrancabermeja",  # .RAW*   — only present on 2025-10-16
 ]
 
-# ─────────────────────────────────────────────
-#  Date / time range to download
-#  Set START_DATE and END_DATE; the pipeline
-#  will iterate every hour between them.
-# ─────────────────────────────────────────────
-START_DATE = datetime(2022, 10, 6, 0)   # inclusive
-END_DATE   = datetime(2022, 10, 6, 23)  # inclusive
+# Default date range when no --start / --end flags are given.
+# To run a single full day use the same date for both, e.g.:
+#   START_DATE = datetime(2023, 9, 22)
+#   END_DATE   = datetime(2023, 9, 22)
+START_DATE = datetime(2023,  9, 22)
+END_DATE   = datetime(2023,  9, 22)
 
-# ─────────────────────────────────────────────
-#  Local storage roots
-#  RAW files  → RAW_DATA_ROOT/{site}/{YYYY}/{MM}/{DD}/
-#  HDF5 files → HDF5_DATA_ROOT/{site}/{YYYY}/{MM}/{DD}/
-# ─────────────────────────────────────────────
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  ② SITE FORMAT MAP  (update when you add a new site)
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Maps each site name to its file format:
+#   "iris"      → Sigmet/IRIS binary files  (.RAWxxxx)
+#   "netcdf"    → CfRadial2 NetCDF files    (.nc)
+#   "netcdf_gz" → gzip-compressed NetCDF    (.nc.gz) — auto-decompressed on download
+#
+# Sites not listed here default to "iris".
+RADAR_FORMAT: dict[str, str] = {
+    "Bogota":           "netcdf_gz",
+    "Corozal":          "iris",
+    "San_Andres":       "iris",
+    "Tablazo":          "iris",
+    "santa_elena":      "netcdf",
+    "Barrancabermeja":  "iris",
+}
+
+# Some sites use a non-standard filename convention that doesn't embed the
+# site code + date in the filename prefix.  For those sites we must list at
+# the folder level (l2_data/YYYY/MM/DD/site/) rather than using a filename
+# prefix query.  Add any site whose filenames don't start with
+# {SIT}{YY}{MM}{DD} here.
+FOLDER_LEVEL_SITES: set[str] = {
+    "Bogota",
+    "santa_elena",
+}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  S3 source  (rarely changes)
+# ═════════════════════════════════════════════════════════════════════════════
+
+S3_BUCKET_NAME = "s3-radaresideam"
+S3_PREFIX      = "l2_data"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Local storage paths
+# ═════════════════════════════════════════════════════════════════════════════
+
 RAW_DATA_ROOT  = Path("data/raw")
 HDF5_DATA_ROOT = Path("data/odim_hdf5")
 
-# ─────────────────────────────────────────────
-#  Conversion options
-# ─────────────────────────────────────────────
-DELETE_RAW_AFTER_CONVERSION = False   # True → save disk space, keep only HDF5
-COMPRESSION_LEVEL           = 6      # gzip level 1–9 for HDF5 datasets
-PARALLEL_WORKERS            = 4      # concurrent download + conversion threads
 
-# ─────────────────────────────────────────────
-#  Logging
-# ─────────────────────────────────────────────
-LOG_FILE = Path("logs/pipeline.log")
+# ═════════════════════════════════════════════════════════════════════════════
+#  Conversion settings
+# ═════════════════════════════════════════════════════════════════════════════
 
-# ─────────────────────────────────────────────
-#  ODIM metadata overrides (optional)
-#  Leave as None to auto-read from RAW headers
-# ─────────────────────────────────────────────
-ODIM_SOURCE_ORG = "IDEAM"       # fills /what/source ORG field
+COMPRESSION_LEVEL           = 6
+DELETE_RAW_AFTER_CONVERSION = False
+ODIM_SOURCE_ORG             = "IDEAM"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Parallelism & logging
+# ═════════════════════════════════════════════════════════════════════════════
+
+PARALLEL_WORKERS = 4
+LOG_FILE         = Path("logs/pipeline.log")
