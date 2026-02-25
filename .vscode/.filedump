@@ -1,0 +1,6 @@
+
+		begin
+      f = addfile("/home/cpmunoz/Documents/radar_baieta_colombia/data/raw/Bogota/2023/09/22/1399BOG-20230922-142207-PPIVol-9872.nc","r")
+      print(f)
+		end
+    
