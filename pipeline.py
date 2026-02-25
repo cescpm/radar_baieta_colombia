@@ -119,7 +119,9 @@ def process_site(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="IDEAM radar pipeline: download .RAW from S3 + convert to HDF5 ODIM"
+        description="Downloads and stores radar data from colombian IDEAM's network "
+        "(.RAW*, .nc, .gz) from an Amazon Web Service (AWS) S3 bucket + converts to " \
+        "HDF5-OPERA Data Information Model (ODIM)"
     )
     parser.add_argument(
         "--sites", nargs="+", default=None,
