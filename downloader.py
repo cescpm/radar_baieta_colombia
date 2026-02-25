@@ -55,32 +55,43 @@ logger = logging.getLogger(__name__)
 _CACHE_FILE = RAW_DATA_ROOT / ".site_availability.json"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  S3 clients
-# ─────────────────────────────────────────────────────────────────────────────
-
+# Low-level client creator ###################################################################
 def _get_s3_client():
-    return boto3.client(
+    """
+    Creates a low-level client with the AWS S3 bucket
+    """
+    return boto3.client(  # Stablishes a low-level connection with the AWS S3 bucket
         "s3",
         config=Config(signature_version=botocore.UNSIGNED,
                       user_agent_extra="ideam-radar-pipeline"),
     )
+#---------------------------------------------------------------------------------------------
 
-
+# High-level client creator ##################################################################
 def _get_s3_resource():
-    return boto3.resource(
+    """
+    Creates a high-level client with the AWS S3 bucket
+    """
+    return boto3.resource(  # Stablishes a high-level connection with the AWS S3 bucket
         "s3",
         config=Config(signature_version=botocore.UNSIGNED,
                       user_agent_extra="ideam-radar-pipeline"),
     )
+#---------------------------------------------------------------------------------------------
 
+# Format helpers #############################################################################
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Format helpers
-# ─────────────────────────────────────────────────────────────────────────────
+def get_site_format(radar_site : str) -> str:
+    """
+    Searches, in dict (from config.py file) the format in which data is stored for the 
+    specified radar_site. 
 
-def get_site_format(radar_site: str) -> str:
-    """Returns 'iris', 'netcdf', or 'netcdf_gz' for a site. Defaults to 'iris'."""
+    -----------
+    Parameters:
+
+    radar_site : str
+        desired radar's name to extract data from
+    """
     return RADAR_FORMAT.get(radar_site, "iris")
 
 
@@ -88,6 +99,13 @@ def raw_glob_pattern(radar_site: str) -> str:
     """
     Glob pattern for scanning local directories for already-downloaded files.
     Note: netcdf_gz sites are stored as .nc after decompression, same as netcdf.
+
+    -----------
+    Parameters:
+
+    radar_site : str
+        desired radar's name to extract data from
+
     """
     fmt = get_site_format(radar_site)
     if fmt in ("netcdf", "netcdf_gz"):
@@ -101,7 +119,7 @@ def uses_folder_prefix(radar_site: str) -> bool:
     (i.e. their filenames don't follow the {SIT}{YY}{MM}{DD} prefix convention).
     """
     return radar_site in FOLDER_LEVEL_SITES
-
+#---------------------------------------------------------------------------------------------
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Availability cache
@@ -337,12 +355,7 @@ def hourly_range(start: datetime, end: datetime):
 #  Main download routine
 # ─────────────────────────────────────────────────────────────────────────────
 
-def download_site_daterange(
-    radar_site: str,
-    start: datetime = START_DATE,
-    end: datetime = END_DATE,
-    force_refresh: bool = False,
-) -> list[Path]:
+def download_site_daterange(radar_site : str, start : datetime =START_DATE, end : datetime =END_DATE, force_refresh : bool =False) -> list[Path]:
     """
     Downloads all files for a single radar site over a date/time range.
 

@@ -43,12 +43,12 @@ END_DATE   = datetime(2023,  9, 22)
 #
 # Sites not listed here default to "iris".
 RADAR_FORMAT: dict[str, str] = {
-    "Bogota":           "netcdf_gz",
-    "Corozal":          "iris",
-    "San_Andres":       "iris",
-    "Tablazo":          "iris",
-    "santa_elena":      "netcdf",
-    "Barrancabermeja":  "iris",
+    "Bogota" : "netcdf_gz",
+    "Corozal" : "iris",
+    "San_Andres" : "iris",
+    "Tablazo" : "iris",
+    "santa_elena" : "netcdf",
+    "Barrancabermeja" : "iris",
 }
 
 # Some sites use a non-standard filename convention that doesn't embed the

@@ -35,48 +35,71 @@ from config import (
 )
 from downloader import download_site_daterange, discover_all_sites
 from converter  import convert_files
+  
+# Logging setup ##############################################################################
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Logging setup
-# ─────────────────────────────────────────────────────────────────────────────
+def setup_logging(verbose : bool =False):
+    """
+    Configurates the log output
 
-def setup_logging(verbose: bool = False):
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    level = logging.DEBUG if verbose else logging.INFO
-    fmt   = "%(asctime)s [%(levelname)-8s] %(name)s — %(message)s"
+    -----------
+    Parameters:
 
-    logging.basicConfig(
+        verbose : bool =False
+    """
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)  # creates/handles properly the ./logs directory to store the logs
+    level = logging.DEBUG if verbose else logging.INFO  # determines the level of the log
+    fmt   = "%(asctime)s [%(levelname)-8s] %(name)s — %(message)s"  # defines the format of the log 
+
+    logging.basicConfig( 
         level=level,
         format=fmt,
         handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(str(LOG_FILE)),
+            logging.StreamHandler(sys.stdout),  # defines to which file does the stream aims to log (terminal)
+            logging.FileHandler(str(LOG_FILE)),  # open the specified filepath and use it as the stream for logging
         ],
     )
 
-logger = logging.getLogger("pipeline")
+logger = logging.getLogger("pipeline")  # creates a logger which inherits the configuration from logging.basicConfig
+#---------------------------------------------------------------------------------------------
 
+# Per-site worker ############################################################################
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Per-site worker  (download + convert)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def process_site(
-    radar_site: str,
-    start: datetime,
-    end: datetime,
-    download_only: bool = False,
-    convert_only:  bool = False,
-) -> dict:
+def process_site(radar_site : str, start : datetime, end : datetime, download_only : bool =False, convert_only :  bool =False) -> dict:
     """
-    Full pipeline for a single radar site.
+    Downloads and converts the data from specific radar site, among a starting and ending date
     Returns a summary dict with counts.
+
+    -----------
+    Parameters:
+
+    radar_site : str
+        radar's name desired to extract data from
+
+    start : datetime
+        start-date for obtaining radar data
+
+    end : datetime
+        end-date for obtaining radar data
+
+    download_only : bool =False
+        only downloads files
+    
+    convert_only : bool =False
+        only converts files
+    
+    --------
+    Returns:
+
+    summary : dict
+        stores the counts which defines the state of the process
+
     """
     summary = {
-        "site":      radar_site,
-        "downloaded": 0,
-        "converted":  0,
-        "errors":     0,
+        "site":       radar_site,  # name of the radar's site
+        "downloaded": 0,  # totally of the files downloaded
+        "converted":  0,  # totally of the files converted
+        "errors":     0,  # totally of the exception raised
     }
 
     # ── Download ──────────────────────────────────────────────────────────────
@@ -111,14 +134,18 @@ def process_site(
             summary["errors"] += 1
 
     return summary
+#---------------------------------------------------------------------------------------------
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Main entry point
-# ─────────────────────────────────────────────────────────────────────────────
+# main #######################################################################################
 
 def main():
-    parser = argparse.ArgumentParser(
+    """
+    Main workflow
+    """
+    # flags ##########################################
+
+    parser = argparse.ArgumentParser(  # allows creating the flags to call in a command line interface (CLI)
         description="Downloads and stores radar data from colombian IDEAM's network "
         "(.RAW*, .nc, .gz) from an Amazon Web Service (AWS) S3 bucket + converts to " \
         "HDF5-OPERA Data Information Model (ODIM)"
@@ -156,6 +183,7 @@ def main():
         help="Enable DEBUG logging"
     )
     args = parser.parse_args()
+    #-------------------------------------------------
 
     setup_logging(verbose=args.verbose)
 
@@ -220,7 +248,7 @@ def main():
     logger.info("-" * 60)
     logger.info(f"  TOTAL: {total_dl} downloaded, {total_hdf} converted, {total_err} errors")
     logger.info("=" * 60)
-
+#---------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
     main()
