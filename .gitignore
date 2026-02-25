@@ -1,4 +1,4 @@
-./logs/
-./data/
-./pycache/
-./tests/
+logs/
+data/
+__pycache__/
+tests/

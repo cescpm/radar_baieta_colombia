@@ -1,0 +1,26 @@
+# IDEAM Radar Pipeline — Python dependencies
+# Install with:  pip install -r requirements.txt
+
+# AWS S3 access (anonymous/public)
+boto3>=1.28
+botocore>=1.31
+
+# Radar file I/O
+xradar>=0.6          # xarray-based radar reader (iris/sigmet backend)
+wradlib>=1.19        # underlying radar I/O and utilities
+fsspec>=2023.6       # s3 file-system abstraction used by xradar
+
+# Data handling
+xarray>=2023.6
+numpy>=1.24
+pandas>=2.0
+
+# HDF5 output
+h5py>=3.9
+
+# Optional: visualization (same as original IDEAM notebook)
+matplotlib>=3.7
+cmweather>=0.2       # radar colormaps (ChaseSpectral etc.)
+
+# Optional: s3fs backend for fsspec (enables s3:// URIs in xarray directly)
+s3fs>=2023.6
