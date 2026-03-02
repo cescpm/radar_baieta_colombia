@@ -74,7 +74,6 @@ def inspect_site(date: datetime, site: str) -> dict:
     for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
             files.append(obj["key"] if "key" in obj else obj["Key"])
-            print(page)
 
     if not files:
         return {"count": 0, "extensions": [], "sample": []}

@@ -121,11 +121,19 @@ def uses_folder_prefix(radar_site: str) -> bool:
     return radar_site in FOLDER_LEVEL_SITES
 #---------------------------------------------------------------------------------------------
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Availability cache
-# ─────────────────────────────────────────────────────────────────────────────
+# Cache handler ##############################################################################
+# Improves the latency of the data request
 
 def _load_cache() -> dict:
+    """
+    Loads, if exists, the cache (.json) into a dict.
+
+    --------
+    Returns:
+
+     : dict
+        Stores the cahe-related data
+    """
     if _CACHE_FILE.exists():
         try:
             return json.loads(_CACHE_FILE.read_text())
@@ -134,16 +142,59 @@ def _load_cache() -> dict:
     return {}
 
 
-def _save_cache(cache: dict) -> None:
+def _save_cache(cache : dict) -> None:
+    """
+    Ensures a proper cache-saving method.
+
+    -----------
+    Parameters:
+
+    cache : dict
+        contains the cache data
+    """
     _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     _CACHE_FILE.write_text(json.dumps(cache, indent=2, sort_keys=True))
 
 
-def _cache_key(radar_site: str, date: datetime) -> str:
+def _cache_key(radar_site : str, date : datetime) -> str:
+    """
+    Defines how the cache key is constructed {name of the radar}|{ISO 8601-format date}.
+
+    -----------
+    Parameters:
+
+    radar_site : str
+        name of the site where the radar is located
+
+    date : datetime
+        mesure date of the data requested
+
+    --------
+    Returns:
+
+     : str
+        key for each entrance in the dictionary
+    """
     return f"{radar_site}|{date:%Y-%m-%d}"
 
 
-def mark_site_date(radar_site: str, date: datetime, has_data: bool) -> None:
+def mark_site_date(radar_site : str, date : datetime, has_data : bool) -> None:
+    """
+    Handles the cache (loading/building/saving...)
+
+    -----------
+    Parameters:
+
+    radar_site : str
+        name of the site where the radar is located
+
+    date : datetime
+        mesure date of the data requested
+
+    has_data : bool
+        Whether if the S3 bucket contains data for the specified radar_site and date
+    """
+
     cache = _load_cache()
     cache[_cache_key(radar_site, date)] = has_data
     _save_cache(cache)
@@ -152,7 +203,7 @@ def mark_site_date(radar_site: str, date: datetime, has_data: bool) -> None:
 def site_date_cached(radar_site: str, date: datetime) -> bool | None:
     """Returns True/False if cached, None if unknown (must query S3)."""
     return _load_cache().get(_cache_key(radar_site, date))
-
+#---------------------------------------------------------------------------------------------
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  S3 prefix builder
