@@ -4,3 +4,5 @@ __pycache__/
 tests/
 mgn2024_urb_seccion
 shp_crveredas_2024/
+manex/
+col-administrative-divisions-shapefiles/
