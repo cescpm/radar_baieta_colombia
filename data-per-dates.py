@@ -87,7 +87,7 @@ def inspect_site(date: datetime, site: str) -> dict:
             ext = "." + name.split(".")[-1] if "." in name else "(no ext)"
             extensions.add(ext)
 
-    sample_names = [f.split("/")[-1] for f in files[:3]]
+    sample_names = [f.split("/")[-1] for f in files[-4:]]
 
     return {
         "count":      len(files),

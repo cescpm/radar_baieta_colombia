@@ -1,0 +1,1 @@
+for FILE in "$@"; do python plottin_xradar.py "$FILE"; done
