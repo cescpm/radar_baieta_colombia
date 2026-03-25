@@ -50,7 +50,7 @@ def extract_metadata(filepath : str) -> OrderedDict|None:
 
         files_meta_odict[key] = {
             # File info
-            'filename':     filename,
+            'filepath':     filepath,
             'hash':         hash1,
                 
             # Sweep info
