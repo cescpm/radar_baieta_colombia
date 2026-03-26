@@ -54,7 +54,7 @@ def main():
     #    for filename in stack:
     #        print(f"  - {filename}")
 
-    pvol_dtree = create_PVOL_from_PPIs(stacks[15])
+    pvol_dtree = create_PVOL_from_PPIs(stacks[-1])
     return pvol_dtree
 
 if __name__ == "__main__":
