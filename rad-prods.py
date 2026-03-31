@@ -1,5 +1,7 @@
 from wradlib.georef.polar import spherical_to_xyz 
 from wradlib.vpr import make_3d_grid, PseudoCAPPI
+from wradlib import ipol
+from wradlib import vis
 from RAW_PVOL import main
 from osgeo import osr
 import numpy as np
@@ -16,13 +18,13 @@ def polcoords_dtree_to_CartesianVol(pvol_dtree):
     radar_lat = float(pvol_dtree["/"]["latitude"].values)
 
     site = (radar_lon, radar_lat, radar_alt)
-    
+        
     lon_Cscan, x_Cscan  = [], []
     lat_Cscan, y_Cscan  = [], []
     alt_Cscan           = []
     elev_Cscan          = []
     dbzh_Cscan          = []
-    
+        
     n_sweeps = [
         sweep_name 
         for sweep_name 
@@ -79,7 +81,7 @@ def polcoords_dtree_to_CartesianVol(pvol_dtree):
             "DBZH" : ("gate", dbzh_Cvol),
         },
         coords     = {
-            "x"    : ("gate", x_Cvol),
+        "x"    : ("gate", x_Cvol),
             "y"    : ("gate", y_Cvol),
             "lon"  : ("gate", lon_Cvol),
             "lat"  : ("gate", lat_Cvol),
@@ -90,31 +92,55 @@ def polcoords_dtree_to_CartesianVol(pvol_dtree):
             "lon_loc"         : pvol_dtree["/radar_parameters"].coords["longitude"].values,
             "lat_loc"         : pvol_dtree["/radar_parameters"].coords["latitude"].values,
             "alt_loc"         : pvol_dtree["/radar_parameters"].coords["altitude"].values,
-            "crs"             : aeqd,
+            "aeqd"            : aeqd,
         },
     )
 
     return Cvol_ds
 
 
-def CartesianVol_to_PseudoCAPPI(ds, maxrange : float =25000, maxalt : float =20000, horiz_res=250, vert_res=500):
-        polcoords = np.column_stack([ds.x.values,ds.y.values,ds.alt.values])
-        site = (ds.attrs["lon_loc"], ds.attrs["lat_loc"])
-        minalt = ds.attrs["alt_loc"]
-        crs = ds.attrs["crs"].to_osr()
-        
-        gridcoords = make_3d_grid(
-             site,
-             crs,
-             maxrange,
-             maxalt,
-             horiz_res,
-             vert_res,
-             minalt,
-        )
+def CartesianVol_to_PseudoCAPPI(ds : xr.Dataset, maxrange : float=300000, maxalt : float=20000, horiz_res=2000, vert_res=500):
+    polcoords = np.column_stack([ds.x.values,ds.y.values,ds.alt.values])
+    site = (ds.attrs["lon_loc"], ds.attrs["lat_loc"])
+    minalt = ds.attrs["alt_loc"]
+    aeqd = ds.attrs["aeqd"]
+            
+    wkt = aeqd.to_wkt()
+    crs_osr = osr.SpatialReference()
+    crs_osr.ImportFromWkt(wkt)
+            
+    gridcoords, gridshape = make_3d_grid(
+        site,
+        crs_osr,
+        maxrange,
+        maxalt,
+        horiz_res,
+        vert_res,
+        minalt=minalt,
+    )
 
-        return gridcoords
+    pcappi = PseudoCAPPI(
+        polcoords,
+        gridcoords,
+        maxrange=maxrange,
+        ipclass=ipol.Idw,
+        nnearest=8,
+        p=2,
+    )
+
+    volume = np.ma.masked_invalid(pcappi(ds.DBZH.values)).reshape(gridshape)
+
+    return volume, gridcoords
+
+
 if __name__ == "__main__":
     pvol_dtree = main()
     ds = polcoords_dtree_to_CartesianVol(pvol_dtree)
-    print(CartesianVol_to_PseudoCAPPI(ds))
+    volume, gridcoords = CartesianVol_to_PseudoCAPPI(ds)
+
+    x = np.unique(gridcoords[:,0])
+    y = np.unique(gridcoords[:,1])
+    z = np.unique(gridcoords[:,2])
+
+    vis.plot_max_plan_and_vert(x, y, z, volume, cmap="turbo")  
+    plt.show()
