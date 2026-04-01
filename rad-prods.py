@@ -1,5 +1,5 @@
 from wradlib.georef.polar import spherical_to_xyz 
-from wradlib.vpr import make_3d_grid, PseudoCAPPI
+from wradlib.vpr import make_3d_grid, PseudoCAPPI, CAPPI
 from wradlib import ipol
 from wradlib import vis
 from RAW_PVOL import main
@@ -68,6 +68,7 @@ def polcoords_dtree_to_CartesianVol(pvol_dtree):
         x_Cscan.append(x.ravel())
         y_Cscan.append(y.ravel())
         dbzh_Cscan.append(dbzh.ravel())
+        elev_Cscan.append(elevation_2d.ravel())
 
     x_Cvol    = np.concatenate(x_Cscan)
     y_Cvol    = np.concatenate(y_Cscan)
@@ -75,17 +76,19 @@ def polcoords_dtree_to_CartesianVol(pvol_dtree):
     lat_Cvol  = np.concatenate(lat_Cscan)
     alt_Cvol  = np.concatenate(alt_Cscan)
     dbzh_Cvol = np.concatenate(dbzh_Cscan)
+    elev_Cvol = np.concatenate(elev_Cscan)
 
     Cvol_ds = xr.Dataset(
         data_vars  = {
             "DBZH" : ("gate", dbzh_Cvol),
         },
         coords     = {
-        "x"    : ("gate", x_Cvol),
+            "x"    : ("gate", x_Cvol),
             "y"    : ("gate", y_Cvol),
             "lon"  : ("gate", lon_Cvol),
             "lat"  : ("gate", lat_Cvol),
-            "alt"  : ("gate", alt_Cvol), 
+            "alt"  : ("gate", alt_Cvol),
+            "elev" : ("gate", elev_Cvol),
         },
         attrs                 = {
             "instrument_name" : pvol_dtree["/"].attrs["instrument_name"],
@@ -132,15 +135,83 @@ def CartesianVol_to_PseudoCAPPI(ds : xr.Dataset, maxrange : float=300000, maxalt
 
     return volume, gridcoords
 
+def CartesianVol_to_CAPPI(ds : xr.Dataset, maxrange : float=300000, maxalt : float=20000, horiz_res=2000, vert_res=500):
+    polcoords = np.column_stack([ds.x.values,ds.y.values,ds.alt.values])
+    site = (ds.attrs["lon_loc"], ds.attrs["lat_loc"])
+    minalt = ds.attrs["alt_loc"]
+    aeqd = ds.attrs["aeqd"]
+    minelev=ds.coords["elev"].values[0]
+    maxelev=ds.coords["elev"].values[-1]
+            
+    wkt = aeqd.to_wkt()
+    crs_osr = osr.SpatialReference()
+    crs_osr.ImportFromWkt(wkt)
+            
+    gridcoords, gridshape = make_3d_grid(
+        site,
+        crs_osr,
+        maxrange,
+        maxalt,
+        horiz_res,
+        vert_res,
+        minalt=minalt,
+    )
+
+    cappi = CAPPI(
+        polcoords,
+        gridcoords,
+        maxrange=maxrange,
+        minelev=minelev,
+        maxelev=maxelev,    
+        ipclass=ipol.Idw,
+        nnearest=8,
+        p=2,
+    )
+
+    volume = np.ma.masked_invalid(cappi(ds.DBZH.values)).reshape(gridshape)
+
+    return volume, gridcoords
+
+def CAPPI_to_EchoTOP(threshold, volume_cappi, gridcoords): 
+
+    volume = volume_cappi.transpose((2, 1, 0))
+
+    mask = volume >= threshold
+    mask_rev = mask[...,::-1]
+
+    idx_rev = np.argmax(mask_rev, axis=2)
+    idx = (volume.shape[2] - 1) - idx_rev
+
+    has_echo = np.any(mask, axis=2)
+    idx = np.where(has_echo, idx, -1)
+
+    z = np.unique(gridcoords[:,2])
+    echo_top = np.where(has_echo, z[idx], np.nan)
+
+    return echo_top
+
 
 if __name__ == "__main__":
     pvol_dtree = main()
     ds = polcoords_dtree_to_CartesianVol(pvol_dtree)
-    volume, gridcoords = CartesianVol_to_PseudoCAPPI(ds)
+    
+    volume_pcappi, gridcoords_pcappi = CartesianVol_to_PseudoCAPPI(ds)
+    volume_cappi , gridcoords_cappi  = CartesianVol_to_CAPPI(ds)
 
-    x = np.unique(gridcoords[:,0])
-    y = np.unique(gridcoords[:,1])
-    z = np.unique(gridcoords[:,2])
+    x_pcappi = np.unique(gridcoords_pcappi[:,0])
+    y_pcappi = np.unique(gridcoords_pcappi[:,1])
+    z_pcappi = np.unique(gridcoords_pcappi[:,2])
 
-    vis.plot_max_plan_and_vert(x, y, z, volume, cmap="turbo")  
+    x_cappi = np.unique(gridcoords_cappi[:,0])
+    y_cappi = np.unique(gridcoords_cappi[:,1])
+    z_cappi = np.unique(gridcoords_cappi[:,2])
+
+    vis.plot_max_plan_and_vert(x_pcappi, y_pcappi, z_pcappi, volume_pcappi, cmap="turbo", unit="dBZH")  
+    vis.plot_max_plan_and_vert(x_cappi, y_cappi, z_cappi, volume_cappi, cmap="turbo", unit="dBZH")
+    plt.show()
+
+    echo_top = CAPPI_to_EchoTOP(-30,volume_cappi,gridcoords_cappi)
+
+    plt.pcolormesh(x_cappi, y_cappi, echo_top.T, shading='auto', cmap="turbo")
+    plt.colorbar(label='Echo Top 45 dBZ (m)')
     plt.show()

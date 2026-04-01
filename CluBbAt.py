@@ -1,4 +1,4 @@
-from wradlib.
+from wradlib.classify import filter_gabella
 from wradlib.vpr import make_3d_grid, PseudoCAPPI
 from wradlib import ipol
 from wradlib import vis
@@ -11,7 +11,11 @@ from scipy.interpolate import griddata
 import xarray as xr
 #----------------------------------------------------------------------------------------
 
-def clutter_identification_and_removal(pvol_dtree):
-
+#def ClIdRe(pvol_dtree):
+    
+def AtCoRe(pvol_dtree):
+    
 
 if __name__ == "__main__":
+    pvol_dtree = main()
+    ClIdRe(pvol_dtree)

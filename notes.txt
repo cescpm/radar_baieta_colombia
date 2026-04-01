@@ -1,0 +1,2 @@
+S'ha de mirar bé com funciona la classificació d'hidrometeors a IRIS-VAISALA no s'importa bé
+des de l'arxiu RAW. S'ha de fer un pas intermig. 
