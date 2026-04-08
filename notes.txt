@@ -1,2 +1,11 @@
 S'ha de mirar bé com funciona la classificació d'hidrometeors a IRIS-VAISALA no s'importa bé
 des de l'arxiu RAW. S'ha de fer un pas intermig. 
+
+Potser puc contribuir a la llibreria wradlib afegint la funció echotop de l'altra llibreria. Model
+Lackshmann 2013
+
+A l'hora de cridar la informació de les estacions, puc: 
+    1. Cridar-les totes i després filtrar per la regió que jo vull
+    2. Només cridar les necessàries. Cal tenir en compte que les estacions que disposo a l'ap
+        són menys que les presents al csv (actives + inactives), per tant en aquest s'ha de fer
+        robust als errors que puguin aflorar.

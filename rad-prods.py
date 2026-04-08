@@ -2,7 +2,7 @@ from wradlib.georef.polar import spherical_to_xyz
 from wradlib.vpr import make_3d_grid, PseudoCAPPI, CAPPI
 from wradlib import ipol
 from wradlib import vis
-from RAW_PVOL import main
+from RAW_PVOL import retrieve_PVol_dtree
 from osgeo import osr
 import numpy as np
 from pyproj import Transformer
@@ -11,7 +11,7 @@ from scipy.interpolate import griddata
 import xarray as xr
 #----------------------------------------------------------------------------------------
 
-def polcoords_dtree_to_CartesianVol(pvol_dtree):
+def PVol_to_CVol(pvol_dtree):
 
     radar_alt = float(pvol_dtree["/"]["altitude"].values)
     radar_lon = float(pvol_dtree["/"]["longitude"].values)
@@ -102,7 +102,7 @@ def polcoords_dtree_to_CartesianVol(pvol_dtree):
     return Cvol_ds
 
 
-def CartesianVol_to_PseudoCAPPI(ds : xr.Dataset, maxrange : float=300000, maxalt : float=20000, horiz_res=2000, vert_res=500):
+def CVol_to_PseudoCAPPI(ds : xr.Dataset, maxrange : float=240000, maxalt : float=20000, horiz_res=2000, vert_res=500):
     polcoords = np.column_stack([ds.x.values,ds.y.values,ds.alt.values])
     site = (ds.attrs["lon_loc"], ds.attrs["lat_loc"])
     minalt = ds.attrs["alt_loc"]
@@ -135,7 +135,7 @@ def CartesianVol_to_PseudoCAPPI(ds : xr.Dataset, maxrange : float=300000, maxalt
 
     return volume, gridcoords
 
-def CartesianVol_to_CAPPI(ds : xr.Dataset, maxrange : float=300000, maxalt : float=20000, horiz_res=2000, vert_res=500):
+def CVol_to_CAPPI(ds : xr.Dataset, maxrange : float=240000, maxalt : float=20000, horiz_res=2000, vert_res=500):
     polcoords = np.column_stack([ds.x.values,ds.y.values,ds.alt.values])
     site = (ds.attrs["lon_loc"], ds.attrs["lat_loc"])
     minalt = ds.attrs["alt_loc"]
@@ -172,7 +172,7 @@ def CartesianVol_to_CAPPI(ds : xr.Dataset, maxrange : float=300000, maxalt : flo
 
     return volume, gridcoords
 
-def CAPPI_to_EchoTOP(threshold, volume_cappi, gridcoords): 
+def CVol_to_EchoTOP(threshold, volume_cappi, gridcoords): 
 
     volume = volume_cappi.transpose((2, 1, 0))
 
@@ -190,13 +190,18 @@ def CAPPI_to_EchoTOP(threshold, volume_cappi, gridcoords):
 
     return echo_top
 
+def Pvol_to_EchoTOP(threshold, pvol_dtree):
+   
+   return 
 
-if __name__ == "__main__":
-    pvol_dtree = main()
-    ds = polcoords_dtree_to_CartesianVol(pvol_dtree)
+def main(pvol_dtree):
+    ds = PVol_to_CVol(pvol_dtree)
     
-    volume_pcappi, gridcoords_pcappi = CartesianVol_to_PseudoCAPPI(ds)
-    volume_cappi , gridcoords_cappi  = CartesianVol_to_CAPPI(ds)
+    volume_pcappi, gridcoords_pcappi = CVol_to_PseudoCAPPI(ds)
+    volume_cappi , gridcoords_cappi  = CVol_to_CAPPI(ds)
+
+    print(np.unique_values(volume_cappi))
+    print(np.unique_values(volume_pcappi))
 
     x_pcappi = np.unique(gridcoords_pcappi[:,0])
     y_pcappi = np.unique(gridcoords_pcappi[:,1])
@@ -210,8 +215,13 @@ if __name__ == "__main__":
     vis.plot_max_plan_and_vert(x_cappi, y_cappi, z_cappi, volume_cappi, cmap="turbo", unit="dBZH")
     plt.show()
 
-    echo_top = CAPPI_to_EchoTOP(-30,volume_cappi,gridcoords_cappi)
+    threshold = 25
+    echo_top  = CVol_to_EchoTOP(threshold,volume_cappi,gridcoords_cappi)
 
     plt.pcolormesh(x_cappi, y_cappi, echo_top.T, shading='auto', cmap="turbo")
-    plt.colorbar(label='Echo Top 45 dBZ (m)')
+    plt.colorbar(label=f'Echo Top {threshold} dBZ (m)')
     plt.show()
+
+if __name__ == "__main__":
+    pvol_dtree = retrieve_PVol_dtree()
+    main(pvol_dtree)

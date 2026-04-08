@@ -47,7 +47,7 @@ def PVOL_to_netCDF4(dtree):
         engine="netcdf4",
     )
 
-def main():
+def retrieve_PVol_dtree():
     stacks = get_stacks(data)
     #for i, stack in enumerate(stacks, 1):
     #    print(f"Stack {i} ({len(stack)} sweeps):")
@@ -58,7 +58,7 @@ def main():
     return pvol_dtree
 
 if __name__ == "__main__":
-    print(main())
+    print(retrieve_PVol_dtree())
 
 
        

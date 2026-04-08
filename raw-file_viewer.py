@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #----------------------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    filepath = "data/raw/Tablazo/2026/02/01/TAB260201235554.RAWVVK4"
+    filepath = "data/raw/Carimagua/2024/11/13/CAR241113001914.RAWT9SH"
     data_odict = wrl.io.iris.read_iris(
         filename=filepath,
         load_data=True,
