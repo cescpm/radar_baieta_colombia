@@ -1,7 +1,10 @@
 import json
 import xradar as xd
+import numpy as np
+from datetime import datetime
+from collections import defaultdict
 #----------------------------------------------------------------------------------------
-with open('metaTablazo.json', 'r') as f:
+with open('Tablazo09.json', 'r') as f:
     data = json.load(f)
 
 def get_stacks(json_data):
@@ -32,7 +35,30 @@ def get_stacks(json_data):
         
     return all_stacks
 
-def create_PVOL_from_PPIs(sweeps_list):
+def get_lower_scans_per_hour(json_data,variable):
+    """
+    És poc robust si tinc dos scans consecutius 0.0 i 0.5 en dos arxius diferents amb interval
+    de temps de l'ordre de segons, ho agafa. He posat 0.0 pel cas de Tablazo perquè em fa més fàcil treballar-ho
+    Però s'ha de millorar la robustesa 
+    """
+    scans_per_hour = defaultdict(list)
+
+    for key, value in json_data.items():
+        sweep_id  = list(value["sweeps"].keys())[0]
+        sweep_num = int(sweep_id)
+
+        sweep_hour = value["sweeps"][str(sweep_num)]["timestamp"]
+        scan_hour  = datetime.fromisoformat(sweep_hour).hour
+
+        if (value["sweeps"][str(sweep_num)]["elevation_angle"] == 0.0) & (variable in value["sweeps"][str(sweep_num)]["fields"]):
+            scans_per_hour[scan_hour].append(value["filepath"])
+
+    scans_per_hour = [scans_per_hour.get(h, []) for h in range(24)]
+
+    return scans_per_hour
+
+
+def create_ScanVol_from_PPIs(sweeps_list):
     dtree = xd.io.open_iris_datatree(sweeps_list[0])
     for iter, sweep_filepath in enumerate(sweeps_list[1:]):
         sweep_group_name = f"/sweep_{iter}"
@@ -40,25 +66,31 @@ def create_PVOL_from_PPIs(sweeps_list):
     
     return dtree
 
-def PVOL_to_netCDF4(dtree):
+def ScanVol_to_netCDF4(dtree):
     variables = dtree.data_vars
     dtree.to_netcdf(
         f"pvol_{dtree["time_coverage_start"]}",
         engine="netcdf4",
     )
 
-def retrieve_PVol_dtree():
+def retrieve_ScanVol_dtree():
     stacks = get_stacks(data)
     #for i, stack in enumerate(stacks, 1):
     #    print(f"Stack {i} ({len(stack)} sweeps):")
     #    for filename in stack:
     #        print(f"  - {filename}")
 
-    pvol_dtree = create_PVOL_from_PPIs(stacks[-1])
+    pvol_dtree = create_ScanVol_from_PPIs(stacks[-1])
     return pvol_dtree
 
+def retrieve_lower_scans():
+    stacks = get_lower_scans_per_hour(data,"DB_HCLASS")
+    #for i, stack in enumerate(stacks, 1):
+    #    print(f"Stack {i} ({len(stack)} sweeps):")
+    #    for filename in stack:
+    #        print(f"  - {filename}")
+            
+    return stacks
+
 if __name__ == "__main__":
-    print(retrieve_PVol_dtree())
-
-
-       
+    retrieve_lower_scans()

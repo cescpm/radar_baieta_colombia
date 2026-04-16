@@ -9,3 +9,6 @@ A l'hora de cridar la informació de les estacions, puc:
     2. Només cridar les necessàries. Cal tenir en compte que les estacions que disposo a l'ap
         són menys que les presents al csv (actives + inactives), per tant en aquest s'ha de fer
         robust als errors que puguin aflorar.
+
+Les dades DB_HCLASS del radar de Tablazo estàn aixafades. No correspon amb el que s'esperaria trobar.La forma concorda,
+però és com si haguéssin donat als valors range = range/2 i afegint nans als range nous afegits sense dades

@@ -2,20 +2,27 @@ from wradlib.georef.polar import spherical_to_xyz
 from wradlib.vpr import make_3d_grid, PseudoCAPPI, CAPPI
 from wradlib import ipol
 from wradlib import vis
-from RAW_PVOL import retrieve_PVol_dtree
+from wradlib import comp
+from wradlib.zr import z_to_r
+from wradlib.trafo import idecibel, kdp_to_r
+from rad_BAndRe import retrieve_ScanVol_dtree, retrieve_lower_scans
+from OpDcod import open_iris_dtree, METEO_TABLE, PRECIP_TABLE, CELL_TABLE
 from osgeo import osr
 import numpy as np
 from pyproj import Transformer
 import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
 import xarray as xr
+import xradar as xd
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 #----------------------------------------------------------------------------------------
 
-def PVol_to_CVol(pvol_dtree):
+def ScanVol_to_CVol(Svol_dtree):
 
-    radar_alt = float(pvol_dtree["/"]["altitude"].values)
-    radar_lon = float(pvol_dtree["/"]["longitude"].values)
-    radar_lat = float(pvol_dtree["/"]["latitude"].values)
+    radar_alt = float(Svol_dtree["/"]["altitude"].values)
+    radar_lon = float(Svol_dtree["/"]["longitude"].values)
+    radar_lat = float(Svol_dtree["/"]["latitude"].values)
 
     site = (radar_lon, radar_lat, radar_alt)
         
@@ -28,12 +35,12 @@ def PVol_to_CVol(pvol_dtree):
     n_sweeps = [
         sweep_name 
         for sweep_name 
-        in pvol_dtree.groups 
+        in Svol_dtree.groups 
         if sweep_name.startswith("/sweep_")
     ]
 
     for sweep in n_sweeps:
-        scan = pvol_dtree[sweep]
+        scan = Svol_dtree[sweep]
 
         azimuth   = scan["azimuth"].data
         range     = scan["range"].data
@@ -91,10 +98,10 @@ def PVol_to_CVol(pvol_dtree):
             "elev" : ("gate", elev_Cvol),
         },
         attrs                 = {
-            "instrument_name" : pvol_dtree["/"].attrs["instrument_name"],
-            "lon_loc"         : pvol_dtree["/radar_parameters"].coords["longitude"].values,
-            "lat_loc"         : pvol_dtree["/radar_parameters"].coords["latitude"].values,
-            "alt_loc"         : pvol_dtree["/radar_parameters"].coords["altitude"].values,
+            "instrument_name" : Svol_dtree["/"].attrs["instrument_name"],
+            "lon_loc"         : Svol_dtree["/radar_parameters"].coords["longitude"].values,
+            "lat_loc"         : Svol_dtree["/radar_parameters"].coords["latitude"].values,
+            "alt_loc"         : Svol_dtree["/radar_parameters"].coords["altitude"].values,
             "aeqd"            : aeqd,
         },
     )
@@ -190,12 +197,21 @@ def CVol_to_EchoTOP(threshold, volume_cappi, gridcoords):
 
     return echo_top
 
-def Pvol_to_EchoTOP(threshold, pvol_dtree):
-   
+def ScanVol_to_EchoTOP(threshold, pvol_dtree):
+   #llibreria echotop https://github.com/vlouf/eth_radar
    return 
 
-def main(pvol_dtree):
-    ds = PVol_to_CVol(pvol_dtree)
+def ReflCVol_to_PrecipCVol(volume_cappi_dBZ,a,b):
+    volume_cappi_Z = idecibel(volume_cappi_dBZ)
+    volume_cappi_R = z_to_r(volume_cappi_Z,a=a,b=b)
+    return volume_cappi_R
+
+def KDPCVol_to_PrecipCVol(volume_cappi_KDP,a,b):
+    volume_cappi_R = kdp_to_r(volume_cappi_KDP,f=5)
+    return volume_cappi_R
+
+def main(Svol_dtree):
+    ds = ScanVol_to_CVol(Svol_dtree)
     
     volume_pcappi, gridcoords_pcappi = CVol_to_PseudoCAPPI(ds)
     volume_cappi , gridcoords_cappi  = CVol_to_CAPPI(ds)
@@ -215,13 +231,143 @@ def main(pvol_dtree):
     vis.plot_max_plan_and_vert(x_cappi, y_cappi, z_cappi, volume_cappi, cmap="turbo", unit="dBZH")
     plt.show()
 
-    threshold = 25
+    threshold = 45
     echo_top  = CVol_to_EchoTOP(threshold,volume_cappi,gridcoords_cappi)
 
     plt.pcolormesh(x_cappi, y_cappi, echo_top.T, shading='auto', cmap="turbo")
     plt.colorbar(label=f'Echo Top {threshold} dBZ (m)')
     plt.show()
 
+    volume_cappi_R = ReflCVol_to_PrecipCVol(volume_cappi,250,1.2)
+
+    vis.plot_max_plan_and_vert(x_cappi, y_cappi, z_cappi, volume_cappi_R, cmap="turbo", unit="mm/h")
+    plt.show()
+
+
 if __name__ == "__main__":
-    pvol_dtree = retrieve_PVol_dtree()
-    main(pvol_dtree)
+    #Svol_dtree = retrieve_ScanVol_dtree()
+    #main(Svol_dtree)
+
+    lowscans_per_hour = retrieve_lower_scans()
+
+    class_acumulat_meteor = None
+    class_acumulat_precip = None
+    class_acumulat_storm  = None
+
+    azimuths_angles = np.arange(0.5, 360, 1.0) 
+
+    for lowscan in lowscans_per_hour[-1]:
+        Scan_dtree = open_iris_dtree(lowscan)
+        
+        n_sweeps = [
+            sweep_name 
+            for sweep_name 
+            in Scan_dtree.groups 
+            if sweep_name.startswith("/sweep_")
+        ]
+
+        first_sweep = n_sweeps[0]
+
+        da_meteor = Scan_dtree[first_sweep]["DB_HCLASS_meteor"]
+        da_precip = Scan_dtree[first_sweep]["DB_HCLASS_precip"]
+        da_storm  = Scan_dtree[first_sweep]["DB_HCLASS_storm"]
+
+        meteor_values = da_meteor.values[:,:332]
+        precip_values = da_precip.values[:,:332]
+        storm_values = da_storm.values[:,:332]
+
+        da_meteor = da_meteor.isel(range=slice(0, 664, 2))
+        da_precip = da_precip.isel(range=slice(0, 664, 2))
+        da_storm = da_storm.isel(range=slice(0, 664, 2))
+
+        da_meteor.values = meteor_values
+        da_precip.values = precip_values
+        da_storm.values = storm_values
+
+        da_meteor_maskd = da_meteor.where(da_meteor >= 5)
+        da_precip_maskd = da_precip.where(da_precip >= 5)
+        da_storm_maskd = da_storm.where(da_storm  == 1)
+
+        da_meteor_maskd_alignd = da_meteor_maskd.reindex(azimuth=azimuths_angles, method="nearest", tolerance=0.5)
+        da_precip_maskd_alignd = da_precip_maskd.reindex(azimuth=azimuths_angles, method="nearest", tolerance=0.5)
+        da_storm_maskd_alignd = da_storm_maskd.reindex(azimuth=azimuths_angles, method="nearest", tolerance=0.5)
+
+        if class_acumulat_meteor is None:
+            class_acumulat_meteor = da_meteor_maskd_alignd
+
+            class_acumulat_meteor.attrs["sweep_mode"]        = Scan_dtree[first_sweep]["sweep_mode"].values
+            class_acumulat_meteor.attrs["sweep_number"]      = Scan_dtree[first_sweep]["sweep_number"].values
+            class_acumulat_meteor.attrs["prt_mode"]          = Scan_dtree[first_sweep]["prt_mode"].values
+            class_acumulat_meteor.attrs["follow_mode"]       = Scan_dtree[first_sweep]["follow_mode"].values
+            class_acumulat_meteor.attrs["sweep_fixed_angle"] = Scan_dtree[first_sweep]["sweep_fixed_angle"].values
+        else:
+            class_acumulat_meteor = xr.apply_ufunc(np.fmax, class_acumulat_meteor, da_meteor_maskd_alignd, keep_attrs=True)
+
+        if class_acumulat_precip is None:
+            class_acumulat_precip = da_precip_maskd_alignd
+
+            class_acumulat_precip.attrs["sweep_mode"]        = Scan_dtree[first_sweep]["sweep_mode"].values
+            class_acumulat_precip.attrs["sweep_number"]      = Scan_dtree[first_sweep]["sweep_number"].values
+            class_acumulat_precip.attrs["prt_mode"]          = Scan_dtree[first_sweep]["prt_mode"].values
+            class_acumulat_precip.attrs["follow_mode"]       = Scan_dtree[first_sweep]["follow_mode"].values
+            class_acumulat_precip.attrs["sweep_fixed_angle"] = Scan_dtree[first_sweep]["sweep_fixed_angle"].values
+        else:
+            class_acumulat_precip = xr.apply_ufunc(np.fmax, class_acumulat_precip, da_precip_maskd_alignd, keep_attrs=True)
+
+        if class_acumulat_storm is None:
+            class_acumulat_storm = da_storm_maskd_alignd
+
+            class_acumulat_storm.attrs["sweep_mode"]        = Scan_dtree[first_sweep]["sweep_mode"].values
+            class_acumulat_storm.attrs["sweep_number"]      = Scan_dtree[first_sweep]["sweep_number"].values
+            class_acumulat_storm.attrs["prt_mode"]          = Scan_dtree[first_sweep]["prt_mode"].values
+            class_acumulat_storm.attrs["follow_mode"]       = Scan_dtree[first_sweep]["follow_mode"].values
+            class_acumulat_storm.attrs["sweep_fixed_angle"] = Scan_dtree[first_sweep]["sweep_fixed_angle"].values
+        else:
+            class_acumulat_storm = xr.apply_ufunc(np.fmax, class_acumulat_storm, da_storm_maskd_alignd, keep_attrs=True)
+
+
+    class_acumulat_meteor.to_netcdf("meteor.nc")
+
+    #fig = plt.figure(figsize=(20,10))
+#
+    #ax1 = fig.add_subplot(131, projection=ccrs.AzimuthalEquidistant(central_longitude=class_acumulat_meteor.longitude.values, central_latitude=class_acumulat_meteor.latitude.values))
+#
+    #class_acumulat_meteor_geo = class_acumulat_meteor.wrl.georef.georeference()
+#
+#
+    #states = cfeature.STATES.with_scale('10m')
+    #ax1.add_feature(states, edgecolor="black", lw=2, zorder=4)
+    #pm1 = vis.plot(class_acumulat_meteor_geo, ax=ax1, alpha=0.95, levels=METEO_TABLE.keys(), transform=ccrs.AzimuthalEquidistant(central_longitude=class_acumulat_meteor.longitude.values, central_latitude=class_acumulat_meteor.latitude.values), add_colorbar=False)
+#
+#
+    #cb = plt.colorbar(pm1, ax=ax1,extend="both",shrink=0.5,  orientation="horizontal", location="bottom")
+    ##cb.ax.set_yticklabels(METEO_TABLE.values())
+#
+    #ax2 = fig.add_subplot(132, projection=ccrs.AzimuthalEquidistant(central_longitude=class_acumulat_precip.longitude.values, central_latitude=class_acumulat_precip.latitude.values))
+  #
+    #class_acumulat_precip_geo = class_acumulat_precip.wrl.georef.georeference()
+  #
+  #
+    #states = cfeature.STATES.with_scale('10m')
+    #ax2.add_feature(states, edgecolor="black", lw=2, zorder=4)
+    #pm2 = vis.plot(class_acumulat_precip_geo, ax=ax2, alpha=0.95, levels=PRECIP_TABLE.keys(), transform=ccrs.AzimuthalEquidistant(central_longitude=class_acumulat_precip.longitude.values, central_latitude=class_acumulat_precip.latitude.values), add_colorbar=False)
+  #
+  #
+    #cb = plt.colorbar(pm2, ax=ax2,extend="both",shrink=0.5,orientation="horizontal", location="bottom")
+    ##cb.ax.set_yticklabels(PRECIP_TABLE.values())
+  #
+    #ax3 = fig.add_subplot(133, projection=ccrs.AzimuthalEquidistant(central_longitude=class_acumulat_storm.longitude.values, central_latitude=class_acumulat_storm.latitude.values))
+  #
+    #class_acumulat_storm_geo = class_acumulat_storm.wrl.georef.georeference()
+  #
+  #
+    #states = cfeature.STATES.with_scale('10m')
+    #ax3.add_feature(states, edgecolor="black", lw=2, zorder=4)
+    #pm3 = vis.plot(class_acumulat_storm_geo, ax=ax3, alpha=0.95, levels=CELL_TABLE.keys(), transform=ccrs.AzimuthalEquidistant(central_longitude=class_acumulat_storm.longitude.values, central_latitude=class_acumulat_storm.latitude.values), add_colorbar=False)
+  #
+  #
+    #cb = plt.colorbar(pm3, ax=ax3,extend="both",shrink=0.5, orientation="horizontal", location="bottom")
+    ##cb.ax.set_yticklabels(CELL_TABLE.values())
+#
+    #plt.tight_layout()
+    #plt.show()

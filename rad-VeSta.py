@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from RAW_PVOL import retrieve_PVol_dtree
+from rad_BAndRe import retrieve_ScanVol_dtree
 
 import cartopy.crs as ccrs
 import cartopy.feature as feature
@@ -41,8 +41,8 @@ def main(codis):
     APP_TOKEN = "MFHXNYLts4ZhySVUsR7emeZXO"
     client = Socrata("www.datos.gov.co", APP_TOKEN)
 
-    data_inici = "2025-04-09"
-    data_fi = "2025-04-11"
+    data_inici = "2026-02-09"
+    data_fi = "2026-02-10"
 
 
     query = client.get(
@@ -58,14 +58,15 @@ def main(codis):
     mask = df["codigoestacion"].isin(codis)
 
     df_maskd = df[mask].copy()
-    print(np.unique_values(df_maskd["valorobservado"]))
-    print(np.unique_counts(df_maskd["valorobservado"]))
+    print(df_maskd)
+    #print(np.unique_values(df_maskd["fechaobservacion"]))
+    #print(np.unique_counts(df_maskd["valorobservado"]))
 
     
 
 if __name__ == "__main__":
 
-    rad_site = (retrieve_PVol_dtree().data_vars["latitude"].values.item(),retrieve_PVol_dtree().data_vars["longitude"].values.item())
-    codis = fence_in_stations(rad_site, 240e3)["CODIGO"].to_numpy()
+    rad_site = (retrieve_ScanVol_dtree().data_vars["latitude"].values.item(),retrieve_ScanVol_dtree().data_vars["longitude"].values.item())
+    codis = fence_in_stations(rad_site, 300e3)["CODIGO"].to_numpy()
     codis = [codi.zfill(10) for codi in codis]
     main(codis)
