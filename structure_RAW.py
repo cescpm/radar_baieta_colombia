@@ -52,7 +52,6 @@ def extract_metadata(filepath : str) -> OrderedDict|None:
             # File info
             'filepath':     filepath,
             'hash':         hash1,
-                
             # Sweep info
             'sweeps':       OrderedDict(),
         }
@@ -101,6 +100,10 @@ def sweeps_to_PVOL(meta):
 def main():
     dirpath     = sys.argv[1]
     output_file = sys.argv[2]
+
+    output_dir = os.path.dirname(output_file)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
     all_records = OrderedDict()
 

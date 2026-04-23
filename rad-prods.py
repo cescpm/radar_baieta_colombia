@@ -16,6 +16,11 @@ import xarray as xr
 import xradar as xd
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import rasterio as rio
+import wradlib as wrl
+import geopandas as gpd
+from shapely.geometry import Polygon
+import pyproj
 #----------------------------------------------------------------------------------------
 
 def ScanVol_to_CVol(Svol_dtree):
@@ -256,7 +261,7 @@ if __name__ == "__main__":
 
     azimuths_angles = np.arange(0.5, 360, 1.0) 
 
-    for lowscan in lowscans_per_hour[-1]:
+    for lowscan in lowscans_per_hour[-3]:
         Scan_dtree = open_iris_dtree(lowscan)
         
         n_sweeps = [
@@ -285,7 +290,7 @@ if __name__ == "__main__":
         da_storm.values = storm_values
 
         da_meteor_maskd = da_meteor.where(da_meteor >= 5)
-        da_precip_maskd = da_precip.where(da_precip >= 5)
+        da_precip_maskd = da_precip.where(da_precip >= 6)
         da_storm_maskd = da_storm.where(da_storm  == 1)
 
         da_meteor_maskd_alignd = da_meteor_maskd.reindex(azimuth=azimuths_angles, method="nearest", tolerance=0.5)
@@ -325,24 +330,65 @@ if __name__ == "__main__":
         else:
             class_acumulat_storm = xr.apply_ufunc(np.fmax, class_acumulat_storm, da_storm_maskd_alignd, keep_attrs=True)
 
+    print(class_acumulat_meteor)
 
-    class_acumulat_meteor.to_netcdf("meteor.nc")
+    site_coords = (class_acumulat_meteor.longitude.values, class_acumulat_meteor.latitude.values, class_acumulat_meteor.altitude.values)
 
+    az = class_acumulat_meteor.azimuth.values
+    rg = class_acumulat_meteor.range.values
+    elev = class_acumulat_meteor.sweep_fixed_angle
+
+    #print(rg, type(rg))
+    #print(az, type(az))
+    #print(elev, type(elev))
+    #print(site_coords)
+
+    proj_wgs84 = pyproj.CRS("EPSG:4326")
+
+    poly_verts, proj = wrl.georef.polar.spherical_to_polyvert(rg, az, elev, site_coords)
+
+    transformer = pyproj.Transformer.from_crs(proj, proj_wgs84, always_xy=True)
+
+    v_shape = poly_verts.shape
+    flat_verts = poly_verts.reshape(-1, 3)
+
+    lon, lat = transformer.transform(flat_verts[:, 0], flat_verts[:, 1])
+    verts_2d = np.stack([lon, lat], axis=1)
+    verts_graus = verts_2d.reshape(*(v_shape[:-1]), 2)
+
+    flat_final = verts_graus.reshape(-1, 5, 2)
+    geometries = [Polygon(v) for v in flat_final]
+
+    print(poly_verts)
+    print(proj)
+
+    gdf = gpd.GeoDataFrame(
+        {'db_hclass': class_acumulat_meteor.values.ravel()}, 
+        geometry=geometries, 
+        crs="EPSG:4326"
+    )
+
+    gdf = gdf.dropna(subset=['db_hclass'])
+
+    gdf.to_file("nuclis_identificats.gpkg", driver="GPKG")
+
+    #class_acumulat_meteor = class_acumulat_meteor.assign_coords(elevation=elev)
+#
+    #print(class_acumulat_meteor)
+#
     #fig = plt.figure(figsize=(20,10))
 #
     #ax1 = fig.add_subplot(131, projection=ccrs.AzimuthalEquidistant(central_longitude=class_acumulat_meteor.longitude.values, central_latitude=class_acumulat_meteor.latitude.values))
 #
     #class_acumulat_meteor_geo = class_acumulat_meteor.wrl.georef.georeference()
 #
-#
     #states = cfeature.STATES.with_scale('10m')
     #ax1.add_feature(states, edgecolor="black", lw=2, zorder=4)
-    #pm1 = vis.plot(class_acumulat_meteor_geo, ax=ax1, alpha=0.95, levels=METEO_TABLE.keys(), transform=ccrs.AzimuthalEquidistant(central_longitude=class_acumulat_meteor.longitude.values, central_latitude=class_acumulat_meteor.latitude.values), add_colorbar=False)
-#
-#
-    #cb = plt.colorbar(pm1, ax=ax1,extend="both",shrink=0.5,  orientation="horizontal", location="bottom")
-    ##cb.ax.set_yticklabels(METEO_TABLE.values())
-#
+    #pm1 = vis.plot(class_acumulat_meteor_geo, ax=ax1, alpha=0.95, levels=METEO_TABLE.keys(), transform=ccrs.AzimuthalEquidistant(central_longitude=class_acumulat_meteor.longitude.values, central_latitude=class_acumulat_meteor.latitude.values), add_colorbar=True)
+
+    #   cb = plt.colorbar(pm1, ax=ax1,extend="both",shrink=0.5,  orientation="horizontal", location="bottom")
+    #cb.ax.set_yticklabels(METEO_TABLE.values())
+
     #ax2 = fig.add_subplot(132, projection=ccrs.AzimuthalEquidistant(central_longitude=class_acumulat_precip.longitude.values, central_latitude=class_acumulat_precip.latitude.values))
   #
     #class_acumulat_precip_geo = class_acumulat_precip.wrl.georef.georeference()

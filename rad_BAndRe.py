@@ -4,7 +4,7 @@ import numpy as np
 from datetime import datetime
 from collections import defaultdict
 #----------------------------------------------------------------------------------------
-with open('Tablazo09.json', 'r') as f:
+with open('metadata/raw/Tablazo/2024/11/21/meta.json', 'r') as f:
     data = json.load(f)
 
 def get_stacks(json_data):
@@ -50,7 +50,7 @@ def get_lower_scans_per_hour(json_data,variable):
         sweep_hour = value["sweeps"][str(sweep_num)]["timestamp"]
         scan_hour  = datetime.fromisoformat(sweep_hour).hour
 
-        if (value["sweeps"][str(sweep_num)]["elevation_angle"] == 0.0) & (variable in value["sweeps"][str(sweep_num)]["fields"]):
+        if (value["sweeps"][str(sweep_num)]["elevation_angle"] < 0.5) & (variable in value["sweeps"][str(sweep_num)]["fields"]):
             scans_per_hour[scan_hour].append(value["filepath"])
 
     scans_per_hour = [scans_per_hour.get(h, []) for h in range(24)]

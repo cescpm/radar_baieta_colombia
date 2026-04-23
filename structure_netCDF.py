@@ -8,7 +8,6 @@ from hashlib import sha1
 from collections import OrderedDict
 from datetime import datetime, timezone
 from concurrent.futures import ProcessPoolExecutor, as_completed
-
 #----------------------------------------------------------------------------------------
 def extract_metadata(filepath: str) -> OrderedDict|None:
     """
@@ -49,12 +48,10 @@ def extract_metadata(filepath: str) -> OrderedDict|None:
         # Get dimensions and variables
         dimensions = meta_odict.get('dimensions', {})
         variables = meta_odict.get('variables', {})
-        
         # Get number of sweeps
         n_sweeps = dimensions.get('sweep', {}).get('size', 0)
-        
         # Get sweep angles
-        sweep_fixed_angles = variables.get('sweep_fixed_angle', {}).get('data', [])
+        sweep_fixed_angles = variables.get('fixed_angle', {}).get('data', [])
         
         # Get timestamp
         timestamp = meta_odict.get('time_coverage_start', 'unknown')
@@ -62,10 +59,20 @@ def extract_metadata(filepath: str) -> OrderedDict|None:
         # Get available fields (exclude coordinate variables)
         available_fields = [
             var for var in variables.keys()
-            if var not in ['time', 'range', 'azimuth', 'elevation',
-                          'latitude', 'longitude', 'altitude',
-                          'sweep_number', 'sweep_mode', 'sweep_fixed_angle',
-                          'volume_number', 'frequency', 'sweep_group_name']
+            if var not in ['volume_number', 'latitude', 'longitude',
+                           'altitude', 'time_coverage_start', 'time_coverage_end',
+                           'time', 'azimuth', 'elevation',
+                           'radar_antenna_gain_h', 'radar_antenna_gain_v',
+                           'radar_beam_width_h', 'radar_beam_width_v',
+                           'radar_receiver_bandwidth', 'frequency',
+                           'radar_measured_transmit_power_h',
+                           'radar_measured_transmit_power_v',
+                           'pulse_width', 'prt', 'prt_ratio', 
+                           'nyquist_velocity', 'n_samples',
+                           'prt_mode', 'polarization_mode',
+                           'range', 'sweep_number', 'sweep_mode',
+                           'fixed_angle', 'sweep_start_ray_index',
+                           'sweep_end_ray_index']
         ]
         
         # Extract sweep information
@@ -125,8 +132,6 @@ def extract_metadata(filepath: str) -> OrderedDict|None:
     except Exception as e:
         print(f"ERROR {filepath}: {e}")
         return None
-
-
 def sweeps_to_PVOL(meta):
     """
     Creates a PVOL product from single PPI scans.
@@ -138,11 +143,13 @@ def sweeps_to_PVOL(meta):
             object_pairs_hook=dict,
         )
     return meta
-
-
 def main():
     dirpath = sys.argv[1]
     output_file = sys.argv[2]
+
+    output_dir = os.path.dirname(output_file)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     
     all_records = OrderedDict()
     
@@ -152,7 +159,7 @@ def main():
             continue
         
         filepath = os.path.join(dirpath, f)
-        
+
         if os.path.getsize(filepath) == 0:
             continue
         
@@ -163,7 +170,7 @@ def main():
     # Sort by timestamp of first sweep
     all_records = OrderedDict(
         sorted(all_records.items(),
-               key=lambda x: next(iter(x[1]['sweeps'].values()))['timestamp'])
+            key=lambda x: next(iter(x[1]['sweeps'].values()))['timestamp'])
     )
     
     with open(output_file + '.json', 'w') as file:

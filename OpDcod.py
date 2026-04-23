@@ -108,8 +108,8 @@ def main():
 
     dt = open_iris_dtree(filepath)
 
-    #print(dt)
-    #print(dt["/sweep_0"].data_vars)
+    print(dt)
+    print(dt["/sweep_0"].data_vars)
 
     variable = str(sys.argv[1])
 
@@ -196,4 +196,4 @@ def main():
 if __name__ == '__main__':
     filepath = "data/raw/Tablazo/2025/10/16/TAB251016000004.RAWA68G"
 
-    
+    main()
