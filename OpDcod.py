@@ -182,12 +182,13 @@ def main():
         )
         
         plot_features(ax2)
-        wrl.vis.plot(
-            da_geo,
-            ax=ax2,
-            cmap="tab20c",
-            transform=ccrs.AzimuthalEquidistant(central_longitude=da.longitude.values, central_latitude=da.latitude.values),
-            add_colorbar=True,
+        da_geo.plot.pcolormesh(
+            x="x", 
+            y="y", 
+            ax=ax2, 
+            cmap="viridis",
+            transform=radar_proj, # Coordinates x/y are in this projection's meters
+            add_colorbar=True
         )
         plt.tight_layout()
         plt.show()
