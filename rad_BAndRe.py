@@ -4,7 +4,7 @@ import numpy as np
 from datetime import datetime
 from collections import defaultdict
 #----------------------------------------------------------------------------------------
-with open('metadata/raw/Tablazo/2024/11/21/meta.json', 'r') as f:
+with open('metadata/raw/Corozal/2024/10/21/meta.json', 'r') as f:
     data = json.load(f)
 
 def get_stacks(json_data):
@@ -41,21 +41,28 @@ def get_lower_scans_per_hour(json_data,variable):
     de temps de l'ordre de segons, ho agafa. He posat 0.0 pel cas de Tablazo perquè em fa més fàcil treballar-ho
     Però s'ha de millorar la robustesa 
     """
-    scans_per_hour = defaultdict(list)
+    hourly_data = defaultdict(list)   # hour -> list of (angle, filepath)
 
     for key, value in json_data.items():
-        sweep_id  = list(value["sweeps"].keys())[0]
-        sweep_num = int(sweep_id)
+        filepath = value['filepath']
+        for sweep_id, sweep_data in value['sweeps'].items():
+            if variable in sweep_data['fields']:
+                timestamp_str = sweep_data['timestamp']
+                hour = datetime.fromisoformat(timestamp_str).hour
+                angle = sweep_data['elevation_angle']
+                hourly_data[hour].append((angle, filepath))
 
-        sweep_hour = value["sweeps"][str(sweep_num)]["timestamp"]
-        scan_hour  = datetime.fromisoformat(sweep_hour).hour
+    result = []
+    for hour in range(24):
+        items = hourly_data.get(hour, [])
+        if not items:
+            result.append([])
+            continue
+        min_angle = min(angle for angle, _ in items)
+        unique_paths = {fp for angle, fp in items if angle == min_angle}
+        result.append(list(unique_paths))
 
-        if (value["sweeps"][str(sweep_num)]["elevation_angle"] < 0.5) & (variable in value["sweeps"][str(sweep_num)]["fields"]):
-            scans_per_hour[scan_hour].append(value["filepath"])
-
-    scans_per_hour = [scans_per_hour.get(h, []) for h in range(24)]
-
-    return scans_per_hour
+    return result
 
 
 def create_ScanVol_from_PPIs(sweeps_list):

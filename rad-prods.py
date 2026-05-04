@@ -21,6 +21,7 @@ import wradlib as wrl
 import geopandas as gpd
 from shapely.geometry import Polygon
 import pyproj
+from xradar.io import open_cfradial1_datatree
 #----------------------------------------------------------------------------------------
 
 def ScanVol_to_CVol(Svol_dtree):
@@ -261,76 +262,84 @@ if __name__ == "__main__":
 
     azimuths_angles = np.arange(0.5, 360, 1.0) 
 
-    for lowscan in lowscans_per_hour[-3]:
-        Scan_dtree = open_iris_dtree(lowscan)
+    try:
+        for lowscan in lowscans_per_hour[-3]:
+            Scan_dtree = open_iris_dtree(lowscan)
         
-        n_sweeps = [
-            sweep_name 
-            for sweep_name 
-            in Scan_dtree.groups 
-            if sweep_name.startswith("/sweep_")
-        ]
+            n_sweeps = [
+                sweep_name 
+                for sweep_name 
+                in Scan_dtree.groups 
+                if sweep_name.startswith("/sweep_")
+            ]
 
-        first_sweep = n_sweeps[0]
+            first_sweep = n_sweeps[0]
 
-        da_meteor = Scan_dtree[first_sweep]["DB_HCLASS_meteor"]
-        da_precip = Scan_dtree[first_sweep]["DB_HCLASS_precip"]
-        da_storm  = Scan_dtree[first_sweep]["DB_HCLASS_storm"]
+            da_meteor = Scan_dtree[first_sweep]["DB_HCLASS_meteor"]
+            da_precip = Scan_dtree[first_sweep]["DB_HCLASS_precip"]
+            da_storm  = Scan_dtree[first_sweep]["DB_HCLASS_storm"]
 
-        meteor_values = da_meteor.values[:,:332]
-        precip_values = da_precip.values[:,:332]
-        storm_values = da_storm.values[:,:332]
+            meteor_values = da_meteor.values[:,:332]
+            precip_values = da_precip.values[:,:332]
+            storm_values = da_storm.values[:,:332]
 
-        da_meteor = da_meteor.isel(range=slice(0, 664, 2))
-        da_precip = da_precip.isel(range=slice(0, 664, 2))
-        da_storm = da_storm.isel(range=slice(0, 664, 2))
+            da_meteor = da_meteor.isel(range=slice(0, 664, 2))
+            da_precip = da_precip.isel(range=slice(0, 664, 2))
+            da_storm = da_storm.isel(range=slice(0, 664, 2))
 
-        da_meteor.values = meteor_values
-        da_precip.values = precip_values
-        da_storm.values = storm_values
+            da_meteor.values = meteor_values
+            da_precip.values = precip_values
+            da_storm.values = storm_values
 
-        da_meteor_maskd = da_meteor.where(da_meteor >= 5)
-        da_precip_maskd = da_precip.where(da_precip >= 6)
-        da_storm_maskd = da_storm.where(da_storm  == 1)
+            da_meteor_maskd = da_meteor.where(da_meteor >= 5)
+            da_precip_maskd = da_precip.where(da_precip >= 6)
+            da_storm_maskd = da_storm.where(da_storm  == 1)
 
-        da_meteor_maskd_alignd = da_meteor_maskd.reindex(azimuth=azimuths_angles, method="nearest", tolerance=0.5)
-        da_precip_maskd_alignd = da_precip_maskd.reindex(azimuth=azimuths_angles, method="nearest", tolerance=0.5)
-        da_storm_maskd_alignd = da_storm_maskd.reindex(azimuth=azimuths_angles, method="nearest", tolerance=0.5)
+            da_meteor_maskd_alignd = da_meteor_maskd.reindex(azimuth=azimuths_angles, method="nearest", tolerance=0.5)
+            da_precip_maskd_alignd = da_precip_maskd.reindex(azimuth=azimuths_angles, method="nearest", tolerance=0.5)
+            da_storm_maskd_alignd = da_storm_maskd.reindex(azimuth=azimuths_angles, method="nearest", tolerance=0.5)
 
-        if class_acumulat_meteor is None:
-            class_acumulat_meteor = da_meteor_maskd_alignd
+            if class_acumulat_meteor is None:
+                class_acumulat_meteor = da_meteor_maskd_alignd
 
-            class_acumulat_meteor.attrs["sweep_mode"]        = Scan_dtree[first_sweep]["sweep_mode"].values
-            class_acumulat_meteor.attrs["sweep_number"]      = Scan_dtree[first_sweep]["sweep_number"].values
-            class_acumulat_meteor.attrs["prt_mode"]          = Scan_dtree[first_sweep]["prt_mode"].values
-            class_acumulat_meteor.attrs["follow_mode"]       = Scan_dtree[first_sweep]["follow_mode"].values
-            class_acumulat_meteor.attrs["sweep_fixed_angle"] = Scan_dtree[first_sweep]["sweep_fixed_angle"].values
-        else:
-            class_acumulat_meteor = xr.apply_ufunc(np.fmax, class_acumulat_meteor, da_meteor_maskd_alignd, keep_attrs=True)
+                class_acumulat_meteor.attrs["sweep_mode"]        = Scan_dtree[first_sweep]["sweep_mode"].values
+                class_acumulat_meteor.attrs["sweep_number"]      = Scan_dtree[first_sweep]["sweep_number"].values
+                class_acumulat_meteor.attrs["prt_mode"]          = Scan_dtree[first_sweep]["prt_mode"].values
+                class_acumulat_meteor.attrs["follow_mode"]       = Scan_dtree[first_sweep]["follow_mode"].values
+                class_acumulat_meteor.attrs["sweep_fixed_angle"] = Scan_dtree[first_sweep]["sweep_fixed_angle"].values
+            else:
+                class_acumulat_meteor = xr.apply_ufunc(np.fmax, class_acumulat_meteor, da_meteor_maskd_alignd, keep_attrs=True)
 
-        if class_acumulat_precip is None:
-            class_acumulat_precip = da_precip_maskd_alignd
+            if class_acumulat_precip is None:
+                class_acumulat_precip = da_precip_maskd_alignd
 
-            class_acumulat_precip.attrs["sweep_mode"]        = Scan_dtree[first_sweep]["sweep_mode"].values
-            class_acumulat_precip.attrs["sweep_number"]      = Scan_dtree[first_sweep]["sweep_number"].values
-            class_acumulat_precip.attrs["prt_mode"]          = Scan_dtree[first_sweep]["prt_mode"].values
-            class_acumulat_precip.attrs["follow_mode"]       = Scan_dtree[first_sweep]["follow_mode"].values
-            class_acumulat_precip.attrs["sweep_fixed_angle"] = Scan_dtree[first_sweep]["sweep_fixed_angle"].values
-        else:
-            class_acumulat_precip = xr.apply_ufunc(np.fmax, class_acumulat_precip, da_precip_maskd_alignd, keep_attrs=True)
+                class_acumulat_precip.attrs["sweep_mode"]        = Scan_dtree[first_sweep]["sweep_mode"].values
+                class_acumulat_precip.attrs["sweep_number"]      = Scan_dtree[first_sweep]["sweep_number"].values
+                class_acumulat_precip.attrs["prt_mode"]          = Scan_dtree[first_sweep]["prt_mode"].values
+                class_acumulat_precip.attrs["follow_mode"]       = Scan_dtree[first_sweep]["follow_mode"].values
+                class_acumulat_precip.attrs["sweep_fixed_angle"] = Scan_dtree[first_sweep]["sweep_fixed_angle"].values
+            else:
+                class_acumulat_precip = xr.apply_ufunc(np.fmax, class_acumulat_precip, da_precip_maskd_alignd, keep_attrs=True)
 
-        if class_acumulat_storm is None:
-            class_acumulat_storm = da_storm_maskd_alignd
+            if class_acumulat_storm is None:
+                class_acumulat_storm = da_storm_maskd_alignd
 
-            class_acumulat_storm.attrs["sweep_mode"]        = Scan_dtree[first_sweep]["sweep_mode"].values
-            class_acumulat_storm.attrs["sweep_number"]      = Scan_dtree[first_sweep]["sweep_number"].values
-            class_acumulat_storm.attrs["prt_mode"]          = Scan_dtree[first_sweep]["prt_mode"].values
-            class_acumulat_storm.attrs["follow_mode"]       = Scan_dtree[first_sweep]["follow_mode"].values
-            class_acumulat_storm.attrs["sweep_fixed_angle"] = Scan_dtree[first_sweep]["sweep_fixed_angle"].values
-        else:
-            class_acumulat_storm = xr.apply_ufunc(np.fmax, class_acumulat_storm, da_storm_maskd_alignd, keep_attrs=True)
+                class_acumulat_storm.attrs["sweep_mode"]        = Scan_dtree[first_sweep]["sweep_mode"].values
+                class_acumulat_storm.attrs["sweep_number"]      = Scan_dtree[first_sweep]["sweep_number"].values
+                class_acumulat_storm.attrs["prt_mode"]          = Scan_dtree[first_sweep]["prt_mode"].values
+                class_acumulat_storm.attrs["follow_mode"]       = Scan_dtree[first_sweep]["follow_mode"].values
+                class_acumulat_storm.attrs["sweep_fixed_angle"] = Scan_dtree[first_sweep]["sweep_fixed_angle"].values
+            else:
+                class_acumulat_storm = xr.apply_ufunc(np.fmax, class_acumulat_storm, da_storm_maskd_alignd, keep_attrs=True)
+
+    except:
+        for lowscan in lowscans_per_hour[-3]:
+            Scan_dtree = open_cfradial1_datatree(lowscan)
+        
 
     print(class_acumulat_meteor)
+
+    surname = lowscan.split("/")[-1][:11]
 
     site_coords = (class_acumulat_meteor.longitude.values, class_acumulat_meteor.latitude.values, class_acumulat_meteor.altitude.values)
 
@@ -370,7 +379,7 @@ if __name__ == "__main__":
 
     gdf = gdf.dropna(subset=['db_hclass'])
 
-    gdf.to_file("nuclis_identificats.gpkg", driver="GPKG")
+    gdf.to_file(f"hail_nuclei_{surname}.gpkg", driver="GPKG")
 
     #class_acumulat_meteor = class_acumulat_meteor.assign_coords(elevation=elev)
 #

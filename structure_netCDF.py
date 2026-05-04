@@ -39,7 +39,7 @@ def extract_metadata(filepath: str) -> OrderedDict|None:
         
         files_meta_odict[key] = {
             # File info
-            'filename': filename,
+            'filepath': filename,
             'hash': hash1,
             # Sweep info
             'sweeps': OrderedDict(),
