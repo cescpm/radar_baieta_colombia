@@ -6,6 +6,7 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import numpy as np
 import xarray as xr
+import cmap
 
 def filter_KDP_RHO(dt):
     swp = dt["/sweep_0"]
@@ -14,7 +15,7 @@ def filter_KDP_RHO(dt):
     z = swp["DBZH"]
 
     ckdp = xr.where(
-        ((rho > 0.95) & (z > 10)),
+        ((rho > 0.95)), # & (z > 10)
         kdp,
         np.nan,
     )
@@ -66,16 +67,29 @@ def ZDR_alpha(dt):
     return dt
 ZDR_alpha(dt)
 
-#def PIA(dt):
-#    swp = dt["/sweep_0"]
-#    alpha = swp["alpha"]
-#    cphi = swp["cPHIDP"]
-#    
-#    pia = 
-#    
-#    swp["PIA"] = pia
-#    return dt
-#PIA(dt)
+def PIA(dt):
+    swp = dt["/sweep_0"]
+    alpha = swp["alpha"]
+    cphi = swp["cKDP"]
+    
+    pia = alpha * cphi
+    
+    swp["PIA"] = pia
+    return dt
+PIA(dt)
+
+def cDBZH(dt):
+    swp = dt["/sweep_0"]
+    pia = swp["PIA"]
+    dbzh = swp["DBZH"]
+    
+    cdbzh = pia + dbzh
+    
+    swp["cDBZH"] = cdbzh
+    swp['cDBZH'].attrs["long_name"] = "corrected_reflectivity"
+    swp['cDBZH'].attrs["units"] = "dBZ"
+    return dt
+cDBZH(dt)
 
 def A_KDP(dt):
     swp = dt["/sweep_0"]
@@ -84,17 +98,21 @@ def A_KDP(dt):
 
     A = alpha*ckdp
 
-    swp["A"] = A
+    swp["A_kdp"] = A
     return dt
 
 A_KDP(dt)
 
 def R_A(dt):
     swp = dt["/sweep_0"]
-    a = swp["A"]
+    a = swp["A_kdp"]
 
-    R = 4120*a**1.03
-
+    R = xr.where(
+        np.abs(a) < 0.045,
+        4120*a**1.03,
+        np.nan,
+    )
+    
     swp["R_A"] = R
     return dt
 R_A(dt)
@@ -104,12 +122,16 @@ print(dt["/sweep_0"].data_vars)
 print(dt["/sweep_0"].pulse_width.values[0]*299792458./2.)
 print(dt["/sweep_0"].range.values[0])
 
-dt["/sweep_0"] = dt["/sweep_0"].ds.assign_coords(range=dt["/sweep_0"].range * 2.0)
+#while dt["/sweep_0"].range.values[0] < 125.0:
+    #dt["/sweep_0"] = dt["/sweep_0"].ds.assign_coords(range=dt["/sweep_0"].range * 2.0)
 
 print(dt["/sweep_0/KDP"].shape)
 
 var = sys.argv[2]
 da = dt["/sweep_0"][f"{var}"]
+#da = xr.where(
+#    dt["/sweep_0/NCPH"] >= 0.0
+#)
 print(da)
 
 da.attrs["sweep_mode"] = dt["/sweep_0"]["sweep_mode"].values
@@ -122,7 +144,9 @@ da_geo.plot.pcolormesh(
     x="x",
     y="y",
     ax=ax2,
-    cmap='turbo_r',
+    #vmin=0,
+    #vmax=60,
+    cmap=cmap.Colormap("ncar").to_mpl(),
     transform=ccrs.AzimuthalEquidistant(central_longitude=da.longitude.values, central_latitude=da.latitude.values),
     add_colorbar=True,
 )

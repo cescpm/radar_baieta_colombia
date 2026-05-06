@@ -99,7 +99,7 @@ def open_iris_dtree(filepath, decode_hclasse : bool = True):
 
 
 def main():
-    filepath = "data/raw/Tablazo/2025/10/16/TAB251016000004.RAWA68G"
+    filepath = "data/raw/Tablazo/2024/04/20/TAB240420235003.RAW6HFU"
 
     data_odict = open_iris_odict(filepath)
 
@@ -187,7 +187,7 @@ def main():
             y="y", 
             ax=ax2, 
             cmap="viridis",
-            transform=radar_proj, # Coordinates x/y are in this projection's meters
+            transform=ccrs.AzimuthalEquidistant(central_longitude=da.longitude.values, central_latitude=da.latitude.values), # Coordinates x/y are in this projection's meters
             add_colorbar=True
         )
         plt.tight_layout()
@@ -195,6 +195,5 @@ def main():
 
 
 if __name__ == '__main__':
-    filepath = "data/raw/Tablazo/2025/10/16/TAB251016000004.RAWA68G"
 
     main()
