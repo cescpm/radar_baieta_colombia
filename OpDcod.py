@@ -194,6 +194,5 @@ def main():
 
 
 if __name__ == '__main__':
-    filepath = "data/raw/Tablazo/2025/10/16/TAB251016000004.RAWA68G"
 
     main()
