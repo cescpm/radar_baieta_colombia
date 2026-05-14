@@ -99,7 +99,7 @@ def open_iris_dtree(filepath, decode_hclasse : bool = True):
 
 
 def main():
-    filepath = "data/raw/Tablazo/2025/10/16/TAB251016000004.RAWA68G"
+    filepath = "data/raw/Tablazo/2024/10/22/TAB241022000147.RAWWL9Z"
 
     data_odict = open_iris_odict(filepath)
 

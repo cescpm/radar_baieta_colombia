@@ -1,6 +1,6 @@
 
 		begin
-      f = addfile("/home/cpmunoz/Documents/radar_baieta_colombia/data/raw/Bogota/2023/09/22/1399BOG-20230922-183709-PPIVol-9a8d.nc","r")
+      f = addfile("/home/cpmunoz/Documents/radar_baieta_colombia/data/raw/Bogota/2024/04/20/1399BOG-20240420-233652-PPIVol-3e1b.nc","r")
       print(f)
 		end
     
