@@ -12,3 +12,9 @@ A l'hora de cridar la informació de les estacions, puc:
 
 Les dades DB_HCLASS del radar de Tablazo estàn aixafades. No correspon amb el que s'esperaria trobar.La forma concorda,
 però és com si haguéssin donat als valors range = range/2 i afegint nans als range nous afegits sense dades
+
+'s3://s3-radaresideam/l2_data/2025/05/02/Guaviare/GUA250502065921.RAWFRGS' té pedra
+s3://s3-radaresideam/l2_data/2025/05/01/Corozal/COR250501004029.RAWF9Y9 té pedra
+
+Guaviare -> ZDR ben calibrada
+Corozal -> ZDR mal calibrada
