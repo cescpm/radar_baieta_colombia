@@ -38,7 +38,7 @@ from sodapy import Socrata
 import datetime as dt
 import pandas as pd
 
-day='18'    
+day='12'    
 
 TOKEN = "MFHXNYLts4ZhySVUsR7emeZXO"
 
@@ -190,53 +190,67 @@ def r_a(ah):
     a, b = 180.0, 0.7
     return a * (ah**b)
 
-def merge_rainfall(ds, alpha):
+def merge_rainfall(ds, alpha=None, kdp_thresh=0.3):
     """
-    Apply decision tree to merge R(Z), R(KDP), R(A), and R(Z, ZDR) estimators.
-    
-    Parameters:
-        ds (xarray.Dataset): Must contain Z, ZDR, and PHIDP.
-        alpha_default (float): The alpha parameter to convert KDP to A.
-        
-    Returns:
-        xarray.DataArray: Merged rainfall rate (mm/h).
+    Merge QPE estimators:
+      - Use R(KDP) where KDP > kdp_thresh (optionally use ZDR for high Z).
+      - Else combine R(A) and R(Z): when both exist apply a data-driven weight,
+        when only one exists use that one.
+
+    Expects ds to contain at least: cDBZH (dBZ, attenuation-corrected), fZDR (dB, interpolated), dKDP.
+    If ds contains A, it will be used for specific attenuation; otherwise alpha*dKDP is used.
     """
-    # --- Prepare data ---
-    # Convert to linear units as needed
-    zh_linear = 10**(ds.cDBZH / 10.0)   # Convert dBZ to linear mm^6/m^3
-    zdr_linear = 10**(ds.fZDR / 10.0) # Convert dB to linear ratio
-    
-    # Calculate KDP from PHIDP (requires smoothing along range)
-    # This is a simple placeholder; use your existing KDP calculation.
-    kdp = ds.dKDP
-    
-    # Calculate A (specific attenuation)
-    # This is a placeholder: A = alpha * KDP, with alpha derived from your ZDR-slope method.
-    # In your code, you would replace 'alpha_default' with the per-sweep alpha you've calculated.
-    ah = alpha * kdp
-    
-    # --- Apply decision thresholds ---
-    # Threshold 1: KDP > 0.3 deg/km
-    mask_kdp = kdp > 0.3
-    
-    # For gates where mask_kdp is True
-    r_final = xr.where(
-        mask_kdp,
-        # Sub-threshold for high ZH (Z > 40 dBZ)
-        xr.where(ds.cDBZH > 40, r_kdp(kdp, zdr_linear, use_zdr=True), r_kdp(kdp, zdr_linear, use_zdr=False)),
-        # For gates where KDP <= 0.3
-        xr.where(
-            ds.fZDR > 0.25, # Threshold 2: ZDR > 0.25 dB
-            r_z_zdr(zh_linear, zdr_linear),
-            # For very light rain: Use R(Z) or a hybrid with R(A)
-            r_z(zh_linear) # Replace with hybrid if needed
-        )
-    )
-    
-    # Ensure no negative or unrealistic values
+    # use provided alpha or global if present
+    if alpha is None:
+        alpha = globals().get("alpha", 0.01)
+
+    # linear conversions
+    zh_lin = 10 ** (ds.cDBZH / 10.0)     # linear Z
+    zdr_lin = 10 ** (ds.fZDR / 10.0)    # linear ZDR ratio
+    kdp = ds.cKDP
+
+    # specific attenuation (prefer dataset A if present)
+    if "A" in ds:
+        ah = ds.A
+    else:
+        ah = alpha * kdp
+
+    # compute estimators (these helper funcs operate elementwise on xarray objects)
+    r_kdp_vals = r_kdp(kdp, zdr_lin, use_zdr=False)
+    r_kdp_zdr_vals = r_kdp(kdp, zdr_lin, use_zdr=True)
+    r_a_vals = r_a(ah)
+    r_z_vals = r_z(zh_lin)
+
+    # masks for availability
+    has_a = np.isfinite(r_a_vals)
+    has_z = np.isfinite(r_z_vals)
+    both = has_a & has_z
+    only_a = has_a & ~has_z
+    only_z = has_z & ~has_a
+
+    # combine A and Z where both present — weight based on relative magnitude
+    # avoid division by zero by adding tiny eps
+    eps = 1e-6
+    denom = (r_a_vals + r_z_vals) + eps
+    w_a = r_a_vals / denom
+    w_z = r_z_vals / denom
+    r_az_combined = (w_a * r_a_vals) + (w_z * r_z_vals)
+
+    # assemble combined fallback (A+Z)
+    r_fallback = xr.where(both, r_az_combined, np.nan)
+    r_fallback = xr.where(only_a, r_a_vals, r_fallback)
+    r_fallback = xr.where(only_z, r_z_vals, r_fallback)
+
+    # final decision: prefer KDP-based when above threshold; for high reflectivity use KDP*ZDR variant
+    use_kdp_branch = kdp > kdp_thresh
+    use_kdp_highZ = use_kdp_branch & (ds.cDBZH > 40)
+
+    r_final = xr.where(use_kdp_highZ, r_kdp_vals,
+                      xr.where(use_kdp_branch, r_kdp_vals, r_fallback))
+
+    # sanitize results
     r_final = r_final.where(r_final >= 0, np.nan)
-    #r_final = r_final.where(r_final < 250, 250) # Cap at 250 mm/h
-    
+
     return r_final
 
 def calc_alpha_per_sweep(ds, zh_var='DBZH', zdr_var='ZDR', rhohv_var='RHOHV',
@@ -580,10 +594,17 @@ def R_per_sweep(s3_path):
     )
     #swp["tPHIDP"] = tPHIDP
 
+    textura_dbzh = wrl.util.texture(DBZH)
+    tDBZH = xr.DataArray(
+        textura_dbzh,
+        dims=DBZH.dims,
+        coords=DBZH.coords
+    )
+
     no_met_mask = (
-          ((DR > dr_thresh) & (DBZH < 35.0))
-        | ((tPHIDP > texture_thresh) & (DBZH < 30.0))
-        | (DBZH <= 5)
+          ((DR > -10) & (DBZH<35.0))
+        | (((tPHIDP > texture_thresh) & (DBZH < 30.0)) 
+        | (tPHIDP <= 0))
         | (CBB == 1.0)
     )
     raw_clutter_flags = no_met_mask.values
@@ -592,7 +613,7 @@ def R_per_sweep(s3_path):
     met_mask_padded = np.pad(met_mask, pad_width=((pad, pad), (0, 0)), mode='wrap')
     structure = generate_binary_structure(rank=2, connectivity=1)
     clean_clutter_mask = binary_opening(met_mask_padded, structure=structure, iterations=1)
-    clean_clutter_mask = binary_closing(clean_clutter_mask, structure=structure, iterations=1)
+    #clean_clutter_mask = binary_closing(clean_clutter_mask, structure=structure, iterations=1)
     met_mask_vals = clean_clutter_mask[pad:-pad,:]
     met_mask = xr.DataArray(
         met_mask_vals,
@@ -607,6 +628,7 @@ def R_per_sweep(s3_path):
 
     no_met_mask_no_texture = (
           ((DR > dr_thresh) & (DBZH < 35.0))
+        | ((tDBZH > 20.0) & (DBZH < 30.0))
         | (DBZH <= 5)
         | (CBB == 1.0)
     )
@@ -616,7 +638,7 @@ def R_per_sweep(s3_path):
     met_mask_padded_no_texture = np.pad(met_mask_no_texture, pad_width=((pad, pad), (0, 0)), mode='wrap')
     structure = generate_binary_structure(rank=2, connectivity=1)
     clean_clutter_mask_no_texture = binary_opening(met_mask_padded_no_texture, structure=structure, iterations=1)
-    clean_clutter_mask_no_texture = binary_closing(clean_clutter_mask_no_texture, structure=structure, iterations=1)
+    #clean_clutter_mask_no_texture = binary_closing(clean_clutter_mask_no_texture, structure=structure, iterations=1)
     met_mask_vals_no_texture = clean_clutter_mask_no_texture[pad:-pad,:]
     met_mask_no_texture = xr.DataArray(
         met_mask_vals_no_texture,
@@ -715,6 +737,7 @@ def R_per_sweep(s3_path):
         KDP,
         np.nan
     )
+    swp["cKDP"] = cKDP
 
     r_metres = swp.coords["range"].values
     resolucio_metres = r_metres[1] - r_metres[0]
@@ -879,11 +902,17 @@ def R_per_sweep_1st(s3_path):
         coords=PHIDP.coords
     )
     #swp["tPHIDP"] = tPHIDP
+    textura_dbzh = wrl.util.texture(DBZH)
+    tDBZH = xr.DataArray(
+        textura_dbzh,
+        dims=DBZH.dims,
+        coords=DBZH.coords
+    )
 
     no_met_mask = (
-          ((DR > dr_thresh) & (DBZH < 35.0))
-        | ((tPHIDP > texture_thresh) & (DBZH < 30.0))
-        | (DBZH <= 5)
+          ((DR > -10) & (DBZH<35.0))
+        | (((tPHIDP > texture_thresh) & (DBZH < 30.0)) 
+        | (tPHIDP <= 0))
         | (CBB == 1.0)
     )
     raw_clutter_flags = no_met_mask.values
@@ -892,7 +921,7 @@ def R_per_sweep_1st(s3_path):
     met_mask_padded = np.pad(met_mask, pad_width=((pad, pad), (0, 0)), mode='wrap')
     structure = generate_binary_structure(rank=2, connectivity=1)
     clean_clutter_mask = binary_opening(met_mask_padded, structure=structure, iterations=1)
-    clean_clutter_mask = binary_closing(clean_clutter_mask, structure=structure, iterations=1)
+    #clean_clutter_mask = binary_closing(clean_clutter_mask, structure=structure, iterations=1)
     met_mask_vals = clean_clutter_mask[pad:-pad,:]
     met_mask = xr.DataArray(
         met_mask_vals,
@@ -906,17 +935,18 @@ def R_per_sweep_1st(s3_path):
     swp["met_mask"] = met_mask
 
     no_met_mask_no_texture = (
-          ((DR > dr_thresh) & (DBZH < 35.0))
-        | (DBZH <= 5)
-        | (CBB == 1.0)
-    )
+      ((DR > dr_thresh) & (DBZH < 35.0))
+    | ((tDBZH > 20.0) & (DBZH < 30.0))
+    | (DBZH <= 5)
+    | (CBB == 1.0)
+)   
     raw_clutter_flags_no_texture = no_met_mask_no_texture.values
     pad = 1
     met_mask_no_texture = ~raw_clutter_flags_no_texture
     met_mask_padded_no_texture = np.pad(met_mask_no_texture, pad_width=((pad, pad), (0, 0)), mode='wrap')
     structure = generate_binary_structure(rank=2, connectivity=1)
     clean_clutter_mask_no_texture = binary_opening(met_mask_padded_no_texture, structure=structure, iterations=1)
-    clean_clutter_mask_no_texture = binary_closing(clean_clutter_mask_no_texture, structure=structure, iterations=1)
+    #clean_clutter_mask_no_texture = binary_closing(clean_clutter_mask_no_texture, structure=structure, iterations=1)
     met_mask_vals_no_texture = clean_clutter_mask_no_texture[pad:-pad,:]
     met_mask_no_texture = xr.DataArray(
         met_mask_vals_no_texture,
@@ -1015,6 +1045,7 @@ def R_per_sweep_1st(s3_path):
         KDP,
         np.nan
     )
+    swp["cKDP"] = cKDP
 
     r_metres = swp.coords["range"].values
     resolucio_metres = r_metres[1] - r_metres[0]
@@ -1085,12 +1116,11 @@ da.coords["altitude"]  = dtree["altitude"].values
 
 da.to_netcdf(f"202505{day}_acc_barrancabermeja.nc")
 ###------------------------------------------------------------------------------------
-
 #gauge_R = []
 #R = []
-#for day in np.arange(1,11):
-#    print(day)
-#    da = xr.open_dataarray(f"2025050{day}_acc_barrancabermeja.nc",engine="netcdf4").sel(range=slice(None,150e3))
+#for day in np.arange(1,17):
+#    print(str(day).zfill(2))
+#    da = xr.open_dataarray(f"202505{str(day).zfill(2)}_acc_barrancabermeja.nc",engine="netcdf4").sel(range=slice(None,150e3))
 #    da = da.where(da != 0)
 #
 #    print(da)
@@ -1156,7 +1186,6 @@ da.to_netcdf(f"202505{day}_acc_barrancabermeja.nc")
 #        val_arr = np.asarray(da.isel(azimuth=int(az_idx), range=int(rng_idx)).values).ravel()
 #        val = float(val_arr[0]) if val_arr.size > 0 else np.nan
 #        R.append(val)
-
 ##da_geo = da.wrl.georef.georeference()
 ##fig = plt.figure(figsize=(20,10))       
 ##ax = fig.add_subplot(121, projection=ccrs.AzimuthalEquidistant(central_longitude=da.longitude.values, central_latitude=da.latitude.values))
@@ -1271,10 +1300,11 @@ da.to_netcdf(f"202505{day}_acc_barrancabermeja.nc")
 #fig = plt.figure(figsize=(20,10))
 #ax2 = fig.add_subplot(111)
 #
-#ax2.scatter(gauge_R, R)
-#ax2.plot([-20,60],[-20,60])
+#ax2.scatter(gauge_R, R, marker='o',color='k')
+#ax2.plot([0,60],[0,60], "red")
 #ax2.set_xscale('log')
 #ax2.set_yscale('log')
+#ax2.grid()
 #
 #plt.tight_layout()
 #plt.show()###
