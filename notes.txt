@@ -18,3 +18,7 @@ s3://s3-radaresideam/l2_data/2025/05/01/Corozal/COR250501004029.RAWF9Y9 té pedr
 
 Guaviare -> ZDR ben calibrada
 Corozal -> ZDR mal calibrada
+
+El emtode de Vulpani sembla crear figures KDP amb valors positius (i negatius) a l'inicia (i fianal) de la precipitació.
+
+Ojo que la meva variable de filtratge, pot filtrar a melting layer

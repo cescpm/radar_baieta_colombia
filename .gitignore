@@ -16,3 +16,6 @@ metadata/
 .filedump
 pngs/
 *.tif
+*.nc
+*.xml
+*.gz
