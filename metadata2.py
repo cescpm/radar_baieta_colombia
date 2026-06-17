@@ -6,7 +6,7 @@ import tempfile
 from hashlib import sha1
 from collections import OrderedDict
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
@@ -14,14 +14,13 @@ import wradlib as wrl
 
 # ----------------------------------------------------------------------------------------
 
-def extract_metadata_from_s3_object(s3_client, bucket_name, s3_key):
+def extract_metadata_from_s3_object(bucket_name, s3_key):
     """
-    Descarga temporalmente un archivo RAW desde S3 y extrae estrictamente la metadata
-    necesaria para la futura creación de Pseudo-PVOLs.
+    Descarga temporalmente un archivo RAW desde S3 y extrae estrictamente la metadata.
+    Cada proceso inicializa su propio cliente S3 de forma segura.
     """
-    # Create a fresh client instance per thread to ensure thread-safety
-    if s3_client is None:
-        s3_client = boto3.client('s3', config=Config(signature_version=UNSIGNED))
+    # Inicialización del cliente S3 dentro del proceso para evitar problemas de pickling
+    s3_client = boto3.client('s3', config=Config(signature_version=UNSIGNED))
 
     with tempfile.NamedTemporaryFile(delete=True) as temp_file:
         try:
@@ -30,7 +29,7 @@ def extract_metadata_from_s3_object(s3_client, bucket_name, s3_key):
             if os.path.getsize(temp_file.name) == 0:
                 return None
 
-            # Extraer metadata (solo funciona con formato IRIS RAW)
+            # Extraer metadata (CPU-bound: se ejecuta en paralelo real gracias a multiprocessing)
             meta_odict = wrl.io.iris.read_iris(
                 filename=temp_file.name,
                 load_data=False,
@@ -77,7 +76,7 @@ def main():
     parser.add_argument("-d", "--date", required=True, help="Fecha a procesar en formato YYYY/MM/DD (ej. 2025/05/01)")
     parser.add_argument("-o", "--output", required=True, help="Ruta y nombre del archivo JSON de salida (sin extensión)")
     parser.add_argument("-b", "--bucket", default="s3-radaresideam", help="Nombre del bucket de S3")
-    parser.add_argument("-w", "--workers", type=int, default=10, help="Número de hilos en paralelo para procesamiento")
+    parser.add_argument("-w", "--workers", type=int, default=4, help="Número de procesos en paralelo (se recomiendan 4 para tus 4 núcleos)")
     args = parser.parse_args()
     
     date_path = args.date
@@ -85,7 +84,6 @@ def main():
     bucket_name = args.bucket
     max_workers = args.workers
     
-    # Target exclusively the Barrancabermeja radar directly in the S3 Prefix
     target_radar = "Barrancabermeja"
     prefix_base = f"l2_data/{date_path}/{target_radar}/"
 
@@ -95,7 +93,7 @@ def main():
     paginator = s3.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix_base)
     
-    # Step 1: Rapidly discover files matching criteria
+    # Descubrimiento rápido de archivos (I/O ligero)
     s3_keys_to_process = []
     for page in pages:
         if 'Contents' not in page:
@@ -105,21 +103,19 @@ def main():
             s3_key = obj['Key']
             filename = os.path.basename(s3_key)
             
-            # FILTRO ESTRICTO: Solo archivos .RAW
             if '.RAW' not in filename.upper() or obj['Size'] == 0:
                 continue
                 
             s3_keys_to_process.append(s3_key)
 
-    print(f"Se encontraron {len(s3_keys_to_process)} archivos válidos. Procesando en paralelo con {max_workers} hilos...")
+    print(f"Se encontraron {len(s3_keys_to_process)} archivos válidos. Procesando en paralelo con {max_workers} procesos...")
 
     radar_files_data = OrderedDict()
 
-    # Step 2: Parallel download and processing using a ThreadPool
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Pass None for s3_client to initialize it inside the thread for safety
+    # Procesamiento con Procesos en lugar de Hilos
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(extract_metadata_from_s3_object, None, bucket_name, key): key 
+            executor.submit(extract_metadata_from_s3_object, bucket_name, key): key 
             for key in s3_keys_to_process
         }
         
@@ -130,7 +126,7 @@ def main():
                 radar_files_data.update(file_meta_odict)
                 print(f"Procesado: {filename}")
 
-    # Step 3: Structure output and sort by timestamp
+    # Organizar y guardar resultados
     if radar_files_data:
         sorted_files = OrderedDict(
             sorted(radar_files_data.items(),
