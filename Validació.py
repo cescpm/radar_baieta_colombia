@@ -37,8 +37,14 @@ import gc
 from sodapy import Socrata
 import datetime as dt
 import pandas as pd
+from scipy.stats import pearsonr
+from sklearn.linear_model import LinearRegression
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import warnings
+warnings.filterwarnings("ignore")
 
 day=sys.argv[1]   
+month=sys.argv[2]
 
 TOKEN = "MFHXNYLts4ZhySVUsR7emeZXO"
 
@@ -170,134 +176,134 @@ def texture_of_complex_phase(FIELD, phidp_field=None, phidp_texture_field=None):
 # 1. ESTIMADORS QPE CORREGITS I CONFIGURATS PER A COLÒMBIA (BANDA C)
 # =====================================================================
 
-def r_z(zh):
-    """
-    R(Z) - Ajustat per a Pluja Estratiforme Tropical a Colòmbia.
-    Equació física: Z = 140 * R^1.45  ->  R = (Z/140)^(1/1.45)
-    'zh' ha d'entrar en unitats lineals (mm^6/m^3).
-    """
-    return (zh / 140.0) ** (1.0 / 1.45)
-
-
-def r_z_rosenfeld(zh):
-    """
-    R(Z) Convectiu - Relació de Rosenfeld per a Convecció Tropical.
-    Equació física: Z = 250 * R^1.2  ->  R = (Z/250)^(1/1.2)
-    'zh' ha d'entrar en unitats lineals (mm^6/m^3).
-    """
-    return (zh / 250.0) ** (1.0 / 1.2)
-
-
-def r_kdp(kdp, zdr_db=None, use_zdr=False):
-    """
-    Estimadors basats en Fase Diferencial per a la Banda C de Colòmbia.
-    - use_zdr=False: R(KDP) pur  -> R = 29.0 * KDP^0.85
-    - use_zdr=True:  R(KDP, ZDR) -> R = 52.0 * KDP^0.94 * 10^(-0.39 * ZDR)
-    NOTA: 'zdr_db' HA D'ENTRAR EN DECIBELS (dB), no linealitzat.
-    """
-    if use_zdr and zdr_db is not None:
-        # Estimador combinat multiparamètric (El més precís en convecció neta)
-        return 52.0 * (kdp ** 0.94) * (10 ** (-0.39 * zdr_db))
-    else:
-        # Estimador de paràmetre únic (Robust contra granís pur o ZDR contaminada)
-        return 29.0 * (kdp ** 0.85)
-
-
-def r_z_zdr(zh_lin, zdr_db):
-    """
-    R(Z, ZDR) - Ajustat per a Tròpics (GPM-NASA).
-    'zh_lin' en unitats lineals, 'zdr_db' DIRECTAMENT EN dB.
-    Equació correcta: R = 0.0067 * Z^0.93 * 10^(-0.34 * ZDR_db)
-    """
-    return 0.0067 * (zh_lin ** 0.93) * (10 ** (-0.34 * zdr_db))
-
-
-def r_a(ah):
-    """
-    R(A) - Estimació per Atenuació Específica per a la Banda C de Colòmbia.
-    Equació física: R = 210 * A^0.90
-    'ah' és l'atenuació específica en dB/km.
-    """
-    return 210.0 * (ah ** 0.90)
+#def r_z(zh):
+#    """
+#    R(Z) - Ajustat per a Pluja Estratiforme Tropical a Colòmbia.
+#    Equació física: Z = 140 * R^1.45  ->  R = (Z/140)^(1/1.45)
+#    'zh' ha d'entrar en unitats lineals (mm^6/m^3).
+#    """
+#    return (zh / 140.0) ** (1.0 / 1.45)
+#
+#
+#def r_z_rosenfeld(zh):
+#    """
+#    R(Z) Convectiu - Relació de Rosenfeld per a Convecció Tropical.
+#    Equació física: Z = 250 * R^1.2  ->  R = (Z/250)^(1/1.2)
+#    'zh' ha d'entrar en unitats lineals (mm^6/m^3).
+#    """
+#    return (zh / 250.0) ** (1.0 / 1.2)
+#
+#
+#def r_kdp(kdp, zdr_db=None, use_zdr=False):
+#    """
+#    Estimadors basats en Fase Diferencial per a la Banda C de Colòmbia.
+#    - use_zdr=False: R(KDP) pur  -> R = 29.0 * KDP^0.85
+#    - use_zdr=True:  R(KDP, ZDR) -> R = 52.0 * KDP^0.94 * 10^(-0.39 * ZDR)
+#    NOTA: 'zdr_db' HA D'ENTRAR EN DECIBELS (dB), no linealitzat.
+#    """
+#    if use_zdr and zdr_db is not None:
+#        # Estimador combinat multiparamètric (El més precís en convecció neta)
+#        return 52.0 * (kdp ** 0.94) * (10 ** (-0.39 * zdr_db))
+#    else:
+#        # Estimador de paràmetre únic (Robust contra granís pur o ZDR contaminada)
+#        return 29.0 * (kdp ** 0.85)
+#
+#
+#def r_z_zdr(zh_lin, zdr_db):
+#    """
+#    R(Z, ZDR) - Ajustat per a Tròpics (GPM-NASA).
+#    'zh_lin' en unitats lineals, 'zdr_db' DIRECTAMENT EN dB.
+#    Equació correcta: R = 0.0067 * Z^0.93 * 10^(-0.34 * ZDR_db)
+#    """
+#    return 0.0067 * (zh_lin ** 0.93) * (10 ** (-0.34 * zdr_db))
+#
+#
+#def r_a(ah):
+#    """
+#    R(A) - Estimació per Atenuació Específica per a la Banda C de Colòmbia.
+#    Equació física: R = 210 * A^0.90
+#    'ah' és l'atenuació específica en dB/km.
+#    """
+#    return 210.0 * (ah ** 0.90)
 
 
 # =====================================================================
 # 2. ARBRE DE DECISIONS OPERACIONAL (MERGE)
 # =====================================================================
 
-def merge_rainfall(ds, alpha=None, kdp_thresh=0.3):
-    """
-    Fusió d'estimadors QPE optimitzada per a la climatologia de Colòmbia.
-    
-    Arbre de decisions:
-    1. Si KDP >= kdp_thresh (Convecció Activa):
-       - Si Z > 50 dBZ o ZDR < 0.2 dB (Risc alt de granís), s'utilitza R(KDP) pur.
-       - En cas contrari, s'utilitza l'estimador estrella R(KDP, ZDR).
-    2. Si KDP < kdp_thresh (Pluja Estratiforme o de Transició):
-       - Si Z > 38 dBZ: Banda brillant (fusió). S'utilitza 100% R(A).
-       - Si 18 <= Z <= 38 dBZ: Pluja moderada. Es fa un Blending (pes lineal en dBZ)
-         entre R(A) i R(Z) estratiforme (o opcionalment R(Z, ZDR) si hi ha confiança).
-       - Si Z < 18 dBZ: Pluja molt feble. Només R(Z) estratiforme pur per evitar soroll.
-    """
-    if alpha is None:
-        alpha = globals().get("alpha", 0.01)
-
-    # 2.1. Conversions de dades d'entrada
-    z_dbz = ds.cDBZH                     # Reflectivitat corregida en dBZ
-    zh_lin = 10 ** (z_dbz / 10.0)        # Z lineal
-    zdr_db = ds.fZDR                     # ZDR en dB (Directa de l'Xarray)
-    kdp = ds.cKDP                        # KDP corregida
-
-    # Càlcul de l'atenuació específica (A)
-    ah = ds.A if "A" in ds else (alpha * kdp)
-
-    # 2.2. Precalculem tots els estimadors element a element
-    r_z_estrat_vals = r_z(zh_lin)
-    r_z_rosenfeld_vals = r_z_rosenfeld(zh_lin)
-    r_a_vals = r_a(ah)
-    r_kdp_pur_vals = r_kdp(kdp, use_zdr=False)
-    r_kdp_zdr_vals = r_kdp(kdp, zdr_db=zdr_db, use_zdr=True)
-
-    # 2.3. DISSENY DELS BLOCKS DE BRANQUES (De baix a dalt de l'arbre)
-    
-    # --- BRANCA ESTRATIFORME (KDP < 0.3) ---
-    # Càlcul del pes del Blending per a la zona moderada (18 a 38 dBZ)
-    w_a = (z_dbz - 18.0) / (38.0 - 18.0)
-    w_a = xr.where(w_a < 0, 0.0, xr.where(w_a > 1, 1.0, w_a)) # Clamping entre 0 i 1
-    r_blending = (w_a * r_a_vals) + ((1.0 - w_a) * r_z_estrat_vals)
-
-    # Unifiquem la branca estratiforme segons el nivell de dBZ
-    #r_fallback = xr.where(
-    #    z_dbz > 38, 
-    #    r_a_vals,  # Si és > 38 dBZ i KDP és baix, és Banda Brillant -> 100% R(A)
-    #    xr.where(
-    #        z_dbz >= 18, 
-    #        r_blending,  # Zona de transició
-    #        r_z_estrat_vals  # < 18 dBZ -> Només R(Z) feble
-    #    )
-    #)
-
-    # --- BRANCA CONVECTIVA (KDP >= 0.3) ---
-    # Decidim si hi ha risc de granís o artefactes polarimètrics aliens a la pluja líquida
-    risc_granis = (z_dbz > 50) | (zdr_db < 0.2)
-    r_convectiu = xr.where(risc_granis, r_kdp_pur_vals, r_kdp_zdr_vals)
-
-    # --- SENSE FASE PERÒ AMB REFLECTIVITAT CONVECTIVA ---
-    # Si KDP és baix (< 0.3) però per algun motiu d'atenuació l'A no està disponible 
-    # i estem en un nucli fort (>38 dBZ), Rosenfeld és el nostre millor mètode d'emergència.
-    # En aquest codi, si KDP és baix i Z > 38, prioritzem R(A) tal com hem quedat, 
-    # però si no existís R(A), canviaríem a Rosenfeld. Ho afegim com a protecció:
-    r_fallback = xr.where(~(np.isfinite(r_a_vals))|(r_a_vals<=0), r_z_rosenfeld_vals, r_blending)
-
-    # 2.4. DECISIÓ FINAL DEL MERGE
-    use_kdp_branch = kdp >= kdp_thresh
-    r_final = xr.where((use_kdp_branch) & (z_dbz>=35.0), r_convectiu, r_fallback)
-
-    # 2.5. SANEJAMENT DE DADES (Sanitization)
-    # Evitem soroll de valors negatius o infinits numèrics
-    r_final = r_final.where((r_final >= 0) & (np.isfinite(r_final)), np.nan)
-
-    return r_final
+#def merge_rainfall(ds, alpha=None, kdp_thresh=0.3):
+#    """
+#    Fusió d'estimadors QPE optimitzada per a la climatologia de Colòmbia.
+#    
+#    Arbre de decisions:
+#    1. Si KDP >= kdp_thresh (Convecció Activa):
+#       - Si Z > 50 dBZ o ZDR < 0.2 dB (Risc alt de granís), s'utilitza R(KDP) pur.
+#       - En cas contrari, s'utilitza l'estimador estrella R(KDP, ZDR).
+#    2. Si KDP < kdp_thresh (Pluja Estratiforme o de Transició):
+#       - Si Z > 38 dBZ: Banda brillant (fusió). S'utilitza 100% R(A).
+#       - Si 18 <= Z <= 38 dBZ: Pluja moderada. Es fa un Blending (pes lineal en dBZ)
+#         entre R(A) i R(Z) estratiforme (o opcionalment R(Z, ZDR) si hi ha confiança).
+#       - Si Z < 18 dBZ: Pluja molt feble. Només R(Z) estratiforme pur per evitar soroll.
+#    """
+#    if alpha is None:
+#        alpha = globals().get("alpha", 0.01)
+#
+#    # 2.1. Conversions de dades d'entrada
+#    z_dbz = ds.cDBZH                     # Reflectivitat corregida en dBZ
+#    zh_lin = 10 ** (z_dbz / 10.0)        # Z lineal
+#    zdr_db = ds.fZDR                     # ZDR en dB (Directa de l'Xarray)
+#    kdp = ds.cKDP                        # KDP corregida
+#
+#    # Càlcul de l'atenuació específica (A)
+#    ah = ds.A if "A" in ds else (alpha * kdp)
+#
+#    # 2.2. Precalculem tots els estimadors element a element
+#    r_z_estrat_vals = r_z(zh_lin)
+#    r_z_rosenfeld_vals = r_z_rosenfeld(zh_lin)
+#    r_a_vals = r_a(ah)
+#    r_kdp_pur_vals = r_kdp(kdp, use_zdr=False)
+#    r_kdp_zdr_vals = r_kdp(kdp, zdr_db=zdr_db, use_zdr=True)
+#
+#    # 2.3. DISSENY DELS BLOCKS DE BRANQUES (De baix a dalt de l'arbre)
+#    
+#    # --- BRANCA ESTRATIFORME (KDP < 0.3) ---
+#    # Càlcul del pes del Blending per a la zona moderada (18 a 38 dBZ)
+#    w_a = (z_dbz - 18.0) / (38.0 - 18.0)
+#    w_a = xr.where(w_a < 0, 0.0, xr.where(w_a > 1, 1.0, w_a)) # Clamping entre 0 i 1
+#    r_blending = (w_a * r_a_vals) + ((1.0 - w_a) * r_z_estrat_vals)
+#
+#    # Unifiquem la branca estratiforme segons el nivell de dBZ
+#    #r_fallback = xr.where(
+#    #    z_dbz > 38, 
+#    #    r_a_vals,  # Si és > 38 dBZ i KDP és baix, és Banda Brillant -> 100% R(A)
+#    #    xr.where(
+#    #        z_dbz >= 18, 
+#    #        r_blending,  # Zona de transició
+#    #        r_z_estrat_vals  # < 18 dBZ -> Només R(Z) feble
+#    #    )
+#    #)
+#
+#    # --- BRANCA CONVECTIVA (KDP >= 0.3) ---
+#    # Decidim si hi ha risc de granís o artefactes polarimètrics aliens a la pluja líquida
+#    risc_granis = (z_dbz > 50) | (zdr_db < 0.2)
+#    r_convectiu = xr.where(risc_granis, r_kdp_pur_vals, r_kdp_zdr_vals)
+#
+#    # --- SENSE FASE PERÒ AMB REFLECTIVITAT CONVECTIVA ---
+#    # Si KDP és baix (< 0.3) però per algun motiu d'atenuació l'A no està disponible 
+#    # i estem en un nucli fort (>38 dBZ), Rosenfeld és el nostre millor mètode d'emergència.
+#    # En aquest codi, si KDP és baix i Z > 38, prioritzem R(A) tal com hem quedat, 
+#    # però si no existís R(A), canviaríem a Rosenfeld. Ho afegim com a protecció:
+#    r_fallback = xr.where(~(np.isfinite(r_a_vals))|(r_a_vals<=0), r_z_rosenfeld_vals, r_blending)
+#
+#    # 2.4. DECISIÓ FINAL DEL MERGE
+#    use_kdp_branch = kdp >= kdp_thresh
+#    r_final = xr.where((use_kdp_branch) & (z_dbz>=35.0), r_convectiu, r_fallback)
+#
+#    # 2.5. SANEJAMENT DE DADES (Sanitization)
+#    # Evitem soroll de valors negatius o infinits numèrics
+#    r_final = r_final.where((r_final >= 0) & (np.isfinite(r_final)), np.nan)
+#
+#    return r_final
 
 def calc_alpha_per_sweep(ds, zh_var='DBZH', zdr_var='ZDR', rhohv_var='RHOHV',
                          band='C', min_gates=200, bin_width=2.0, min_bins=5,
@@ -386,7 +392,7 @@ def calc_alpha_per_sweep(ds, zh_var='DBZH', zdr_var='ZDR', rhohv_var='RHOHV',
     # Polynomial coefficients for different radar bands
     coefficients = {
         'S': [0.054, -1.31, 10.9],
-        'C': [0.059, -1.22, 9.7],
+        'C': [0.054, -1.31, 10.9],
         'X': [0.087, -1.78, 14.2]
     }
 
@@ -486,7 +492,7 @@ def open_iris_dtree(filepath, decode_hclass : bool = True):
 
 fs = s3fs.S3FileSystem(anon=True) 
 
-with open(f'metadata/2025/05/{str(day).zfill(2)}.json', 'r') as f:
+with open(f'metadata/2025/{str(month).zfill(2)}/{str(day).zfill(2)}.json', 'r') as f:
     data = json.load(f)
 
 # Fix get_stacks to avoid TypeError
@@ -634,8 +640,6 @@ def R_per_sweep(s3_path):
 
     textura_phidp = texture_of_complex_phase(PHIDP.where(PHIDP>=0.0,np.nan)*2)
 
-    #textura_phidp = wrl.util.texture(PHIDP)
-
     tPHIDP = xr.DataArray(
         textura_phidp,
         dims=PHIDP.dims,
@@ -655,7 +659,7 @@ def R_per_sweep(s3_path):
 
     no_met_mask = (
           ((DR > -10) & (DBZH<35.0))
-        #| ((tPHIDP > 20) & (DBZH < 30.0)) 
+        | ((tPHIDP > 15) & (DBZH < 30.0)) 
         | (PHIDP < 0.0)
         | (CBB == 1.0)
     )
@@ -668,7 +672,7 @@ def R_per_sweep(s3_path):
 
     # B. Opening: Targets and erases single-pixel transient speckles across clean areas
     clean_clutter_mask = binary_opening(met_mask_padded, structure=structure, iterations=1)
-    #clean_clutter_mask = binary_closing(clean_clutter_mask, structure=structure, iterations=1)
+    clean_clutter_mask = binary_closing(clean_clutter_mask, structure=structure, iterations=1)
 
 
     met_mask_vals = clean_clutter_mask[pad:-pad,:]
@@ -690,7 +694,7 @@ def R_per_sweep(s3_path):
     no_met_mask_no_texture = (
           ((DR > dr_thresh) & (DBZH < 35.0))
         | ((tDBZH > 20.0) & (DBZH < 30.0))
-        | (DBZH <= 5)
+        | (DBZH <= 0.0)
         | (CBB == 1.0)
     )
     raw_clutter_flags_no_texture = no_met_mask_no_texture.values
@@ -702,7 +706,7 @@ def R_per_sweep(s3_path):
 
     # B. Opening: Targets and erases single-pixel transient speckles across clean areas
     clean_clutter_mask_no_texture = binary_opening(met_mask_padded_no_texture, structure=structure, iterations=1)
-    #clean_clutter_mask_no_texture = binary_closing(clean_clutter_mask_no_texture, structure=structure, iterations=1)
+    clean_clutter_mask_no_texture = binary_closing(clean_clutter_mask_no_texture, structure=structure, iterations=1)
 
 
     met_mask_vals_no_texture = clean_clutter_mask_no_texture[pad:-pad,:]
@@ -831,7 +835,7 @@ def R_per_sweep(s3_path):
 
     alpha = calc_alpha_per_sweep(swp)
 
-    A = alpha * cKDP
+    A = alpha * dKDP
     dr = float(
         swp["range"][1] - swp["range"][0]
     ) 
@@ -848,15 +852,22 @@ def R_per_sweep(s3_path):
     cDBZH_attcorr = fDBZH + PIA
     swp["cDBZH"] = cDBZH_attcorr
 
-    swp["R"] = merge_rainfall(swp,alpha)
-    R = swp["R"].values.copy()
+    R_A = 260 * (A ** 1.03)
+    R_KDP = 42.1 * (dKDP ** 0.79)
+    R_Z = (10**(cDBZH_attcorr/10)/120)**(1/1.43)
+    R_Z_raw = (10**(DBZH/10)/120)**(1/1.43)
+
+    r_a_val = R_A.values.astype(np.float32)
+    r_kdp_val = R_KDP.values.astype(np.float32)
+    r_z_val = R_Z.values.astype(np.float32)
+    r_z_raw_val = R_Z_raw.values.astype(np.float32)
 
     del swp
     del dtree
     del bytes_en_memoria
     gc.collect()
 
-    return R
+    return r_a_val, r_kdp_val, r_z_val, r_z_raw_val
 
 def R_per_sweep_1st(s3_path):
 
@@ -984,7 +995,7 @@ def R_per_sweep_1st(s3_path):
 
     no_met_mask = (
           ((DR > -10) & (DBZH<35.0))
-        #| ((tPHIDP > 20) & (DBZH < 30.0)) 
+        | ((tPHIDP > 15) & (DBZH < 30.0)) 
         | (PHIDP < 0.0)
         | (CBB == 1.0)
     )
@@ -997,7 +1008,7 @@ def R_per_sweep_1st(s3_path):
 
     # B. Opening: Targets and erases single-pixel transient speckles across clean areas
     clean_clutter_mask = binary_opening(met_mask_padded, structure=structure, iterations=1)
-    #clean_clutter_mask = binary_closing(clean_clutter_mask, structure=structure, iterations=1)
+    clean_clutter_mask = binary_closing(clean_clutter_mask, structure=structure, iterations=1)
 
 
     met_mask_vals = clean_clutter_mask[pad:-pad,:]
@@ -1019,7 +1030,7 @@ def R_per_sweep_1st(s3_path):
     no_met_mask_no_texture = (
           ((DR > dr_thresh) & (DBZH < 35.0))
         | ((tDBZH > 20.0) & (DBZH < 30.0))
-        | (DBZH <= 5)
+        | (DBZH <= 0.0)
         | (CBB == 1.0)
     )
     raw_clutter_flags_no_texture = no_met_mask_no_texture.values
@@ -1031,7 +1042,7 @@ def R_per_sweep_1st(s3_path):
 
     # B. Opening: Targets and erases single-pixel transient speckles across clean areas
     clean_clutter_mask_no_texture = binary_opening(met_mask_padded_no_texture, structure=structure, iterations=1)
-    #clean_clutter_mask_no_texture = binary_closing(clean_clutter_mask_no_texture, structure=structure, iterations=1)
+    clean_clutter_mask_no_texture = binary_closing(clean_clutter_mask_no_texture, structure=structure, iterations=1)
 
 
     met_mask_vals_no_texture = clean_clutter_mask_no_texture[pad:-pad,:]
@@ -1177,241 +1188,370 @@ def R_per_sweep_1st(s3_path):
     cDBZH_attcorr = fDBZH + PIA
     swp["cDBZH"] = cDBZH_attcorr
 
-    swp["R"] = merge_rainfall(swp,alpha) #((10**(cDBZH_attcorr/10))/250)**(1/1.2) #
+    #swp["R"] = merge_rainfall(swp,alpha) #((10**(cDBZH_attcorr/10))/250)**(1/1.2) #
 
-    return swp["R"],swp,dtree,site
+    R_A = 260 * (A ** 1.03)
+    R_KDP = 42.1 * (dKDP ** 0.79)
+    R_Z = (10**(cDBZH_attcorr/10)/120)**(1/1.43)
+    R_Z_raw = (10**(DBZH/10)/120)**(1/1.43)
+    
+    return R_A,R_KDP,R_Z,R_Z_raw,swp,dtree,site
 #----------------------------------------------------------------------------------
+if __name__ == "__main__":
+    R_A,R_KDP,R_Z,R_Z_raw,swp,dtree,site = R_per_sweep_1st(output_list[0])
 
-#R,swp,dtree,site = R_per_sweep_1st(output_list[0])
-#
-#acc_R = np.zeros_like(R.values, dtype=np.float32)
-#acc_R += np.nan_to_num(R.values, nan=0.0) * (5/60)
-#
-#for s3_path in output_list[1:]:
-#
-#    errors = 0
-#
-#    R = R_per_sweep(s3_path)
-#    try:
-#        acc_R += np.nan_to_num(R, nan=0.0) * (5/60)
-#    except Exception as e:
-#        print(f"Error processing {s3_path}: {e}")
-#        import traceback
-#        traceback.print_exc()
-#        errors += 1
-#        continue
-#
-#print(errors)
-#
-#da = xr.DataArray(
-#    acc_R,
-#    dims=swp["DBZH"].dims,
-#    coords=swp["DBZH"].coords,
-#    attrs=swp["DBZH"].attrs
-#)
-#
-#da.attrs["sweep_mode"] = swp["sweep_mode"].values
-#da.coords["longitude"] = dtree["longitude"].values
-#da.coords["latitude"]  = dtree["latitude"].values
-#da.coords["altitude"]  = dtree["altitude"].values
-#
-#da.to_netcdf(f"202505{str(day).zfill(2)}_premium_Rmerge_acc_barrancabermeja.nc")
+    acc_R_A  = np.zeros_like(R_A.values, dtype=np.float32)
+    acc_R_A += np.nan_to_num(R_A.values, nan=0.0) * (5/60)
+
+    acc_R_KDP  = np.zeros_like(R_KDP.values, dtype=np.float32)
+    acc_R_KDP += np.nan_to_num(R_KDP.values, nan=0.0) * (5/60)
+
+    acc_R_Z  = np.zeros_like(R_Z.values, dtype=np.float32)
+    acc_R_Z += np.nan_to_num(R_Z.values, nan=0.0) * (5/60)
+
+    acc_R_Z_raw  = np.zeros_like(R_Z_raw.values, dtype=np.float32)
+    acc_R_Z_raw += np.nan_to_num(R_Z_raw.values, nan=0.0) * (5/60)
+
+    errors = 0
+
+    WORKERS = 8
+    BATCH_SIZE = 16
+
+    files_to_process = output_list[1:]
+
+    for i in range(0, len(files_to_process), BATCH_SIZE):
+        batch = files_to_process[i:i + BATCH_SIZE]
+        print(f"Processing batch {i//BATCH_SIZE + 1} / {(len(files_to_process) // BATCH_SIZE) + 1}...")
+
+        # Creating the executor inside the loop ensures that after BATCH_SIZE files, 
+        # the processes are killed and all fragmented RAM is returned to the OS.
+        with ProcessPoolExecutor(max_workers=WORKERS) as executor:
+            futures = {
+                executor.submit(R_per_sweep, s3_path): s3_path
+                for s3_path in batch
+            }
+
+            for future in as_completed(futures):
+                s3_path = futures[future]
+                try:
+                    # Retrieve the lightweight float32 numpy arrays
+                    r_a, r_kdp, r_z, r_z_raw = future.result()
+
+                    # Accumulate directly
+                    acc_R_A     += np.nan_to_num(r_a, nan=0.0)     * (5/60)
+                    acc_R_KDP   += np.nan_to_num(r_kdp, nan=0.0)   * (5/60)
+                    acc_R_Z     += np.nan_to_num(r_z, nan=0.0)     * (5/60)
+                    acc_R_Z_raw += np.nan_to_num(r_z_raw, nan=0.0) * (5/60)
+
+                    print(f"Finished {s3_path}")
+                    
+                    # Delete local references to free memory quickly
+                    del r_a, r_kdp, r_z, r_z_raw
+
+                except Exception as e:
+                    print(f"Error processing {s3_path}: {e}")
+                    errors += 1
+        
+        # Force garbage collection between batches
+        gc.collect()
+
+    print(f"Càlcul finalitzat. Errors totals detectats: {errors}")
+
+    ds = xr.Dataset(
+        data_vars={
+            "acc_R_A":     (swp["DBZH"].dims, acc_R_A),
+            "acc_R_KDP":   (swp["DBZH"].dims, acc_R_KDP),
+            "acc_R_Z":     (swp["DBZH"].dims, acc_R_Z),
+            "acc_R_Z_raw": (swp["DBZH"].dims, acc_R_Z_raw)
+        },
+        coords=swp["DBZH"].coords,
+        attrs=swp["DBZH"].attrs
+    )
+
+    # Afegir metadades geogràfiques del radar de Barrancabermeja
+    ds.attrs["sweep_mode"] = swp["sweep_mode"].values
+    ds.coords["longitude"] = dtree["longitude"].values
+    ds.coords["latitude"]  = dtree["latitude"].values
+    ds.coords["altitude"]  = dtree["altitude"].values
+
+    # Exportar el fitxer final NetCDF
+    output_filename = f"2025{str(month).zfill(2)}{str(day).zfill(2)}_R_acc_barrancabermeja.nc"
+    ds.to_netcdf(output_filename)
+    print(f"Fitxer guardat correctament: {output_filename}")
 ###------------------------------------------------------------------------------------
-gauge_R = []
-R = []
-for month in np.arange(5,7):
-    for day in np.arange(1,19):
-        print(str(day).zfill(2))
-        try:
-            da = xr.open_dataarray(f"2025{str(month).zfill(2)}{str(day).zfill(2)}_premium_Rmerge_acc_barrancabermeja.nc",engine="netcdf4").sel(range=slice(None,150e3))
-        except Exception as e:
-            print(month,day)
-            continue
-
-        da = da.where(da != 0)
-
-        print(da)
-
-        lat = da.latitude.values
-        lon = da.longitude.values
-        max_range = 150/111
-        max_lat = lat + max_range
-        max_lon = lon + max_range
-        min_lat = lat - max_range
-        min_lon = lon - max_range
-
-        start = dt.datetime(2025,month,day+1)
-        print("start:", start)
-        end = dt.datetime(2025,month,day+2)
-        print("end:", end)
-        df = download_data(start,end,min_lat,max_lat,min_lon,max_lon) # a dia 12/05/2026 no funciona del tot correctament i has de posar un dia més perquè et retorni el dia que pertoca
-        print(df)
-        df["fechaobservacion"] = (
-            pd.to_datetime(df["fechaobservacion"])
-            .dt.tz_localize("America/Bogota")
-            .dt.tz_convert("UTC")
-        )
-        print(df)
-        df["valorobservado"] = pd.to_numeric(df["valorobservado"], errors="coerce")
-        df = df.dropna(subset=["valorobservado"])
-        df["latitud"] = pd.to_numeric(df["latitud"], errors="coerce")
-        df =df.dropna(subset=["latitud"])
-        df["longitud"] = pd.to_numeric(df["longitud"], errors="coerce")
-        df = df.dropna(subset=["longitud"])
-
-        hourly_geo_df = df.groupby([
-            'codigoestacion', 
-            'latitud', 
-            'longitud',
-        ])['valorobservado'].sum().reset_index()
-        diary_geo_df = hourly_geo_df.rename(columns={'valorobservado': 'acumulado_diario'})
-        print(diary_geo_df)
-
-        ranges = [10000, 50000, 100000, 150000]
-        number_of_colors=72
-
-        site= (da.longitude.values,
-               da.latitude.values,
-               da.altitude.values)
-
-        gate_lon = da["gate_longitude"].values
-        gate_lat = da["gate_latitude"].values
-
-        gate_points = np.column_stack([gate_lon.ravel(), gate_lat.ravel()])
-        tree = cKDTree(gate_points)
-
-        gauge_coords = diary_geo_df[['longitud', 'latitud']].values
-        distances, indices = tree.query(gauge_coords, k=1)
-
-        # extend gauge_R with scalar values so gauge_R is a flat list matching R
-        gauge_R.extend(diary_geo_df['acumulado_diario'].values.tolist())
-
-        # ensure indices is 1D and iterate, converting radar values to scalar floats
-        indices = np.array(indices).ravel()
-        for idx in indices:
-            az_idx, rng_idx = np.unravel_index(int(idx), gate_lon.shape)
-            val_arr = np.asarray(da.isel(azimuth=int(az_idx), range=int(rng_idx)).values).ravel()
-            val = float(val_arr[0]) if val_arr.size > 0 else np.nan
-            R.append(val)
-##da_geo = da.wrl.georef.georeference()
-##fig = plt.figure(figsize=(20,10))       
-##ax = fig.add_subplot(121, projection=ccrs.AzimuthalEquidistant(central_longitude=da.longitude.values, central_latitude=da.latitude.values))
-##
-##ax.set_facecolor('xkcd:light gray') 
-##
-##plot_features(ax)
-##da_geo.plot.pcolormesh(
-##    x="x",
-##    y="y",
-##    ax=ax,
-##    vmin=0,
-##    vmax=200,
-##    cmap=cmap.Colormap("ncar").to_mpl(number_of_colors),
-##    transform=ccrs.AzimuthalEquidistant(central_longitude=da.longitude.values, central_latitude=da.latitude.values),
-##    add_colorbar=True,
-##)
-##
-##zeros = diary_geo_df[diary_geo_df["acumulado_diario"] == 0]
-##nonzeros = diary_geo_df[diary_geo_df["acumulado_diario"] > 0]
-##
-##sc = ax.scatter(
-##    nonzeros["longitud"],
-##    nonzeros["latitud"],
-##    c=nonzeros["acumulado_diario"],
-##    vmin=0,
-##    vmax=200,
-##    cmap=cmap.Colormap("ncar").to_mpl(number_of_colors),
-##    s=50,
-##    edgecolors="red",
-##    linewidth=0.9,
-##    alpha=0.9,
-##    transform=ccrs.PlateCarree(),
-##    zorder=1,
-##)
-##
-##ax.scatter(
-##    zeros["longitud"],
-##    zeros["latitud"],
-##    facecolors="none",
-##    edgecolors="black",
-##    s=20,
-##    linewidth=0.5,
-##    alpha=0.7,
-##    transform=ccrs.PlateCarree(),
-##    zorder=2,
-##)
-##
-##cb = plt.colorbar(sc,ax=ax,extend="max")
-##
-##ax.set_extent([min_lon, max_lon, min_lat, max_lat], crs=ccrs.PlateCarree())
-##
-##proj_crs = ccrs.AzimuthalEquidistant(
-##    central_longitude=da.longitude.values, 
-##    central_latitude=da.latitude.values
-##)
-##
-##wrl.vis.plot_ppi_crosshair(
-##    site=site,
-##    ranges=ranges,
-##    line={"color": "None"},
-##    circle={"edgecolor": "black", "linewidth" : 1, "linestyle" : "-"},
-##    ax=ax,
-##    crs=proj_crs,
-##)
-##
-### 3. Add the text labels
-### Choose an angle to place the text (e.g., 45 degrees, top-right quadrant)
-##angle_deg = 45 
-##angle_rad = np.radians(angle_deg)
-##
-##for r in ranges:
-##    # Calculate x and y coordinates in meters from the center
-##    # In meteorology, 0 degrees is usually North. 
-##    # So x = r * sin(angle), y = r * cos(angle)
-##    x = r * np.sin(angle_rad)
-##    y = r * np.cos(angle_rad)
-##    
-##    # Format the label to km for readability (e.g., "12.5 km")
-##    label_text = f"{r / 1000:g} km"
-##    
-##    # Plot the text
-##    ax.text(
-##        x, y, label_text,
-##        transform=proj_crs,         # Ensures it maps to your cartopy projection correctly
-##        fontsize=9,
-##        ha='center',                # Horizontally center the text on the coordinate
-##        va='center',                # Vertically center the text on the coordinate
-##        color='black',
-##        # Adding a small, semi-transparent white box behind the text makes it 
-##        # readable even if it overlaps with intense radar MLes.
-##        bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1.5) 
-##    )
-####print(diary_geo_df["longitud"].to_numpy())
-####print(type(diary_geo_df["codigoestacion"].to_numpy()[0]))
-####
-##### annotate each station individually (matplotlib expects scalar x, y, text)
-####for _, row in diary_geo_df.iterrows():
-####    ax.text(
-####        row["longitud"],
-####        row["latitud"],
-####        str(row["codigoestacion"]),
-####        transform=ccrs.PlateCarree(),
-####        fontsize=8,
-####        ha='left',
-####        va='bottom',
-####        color='black',
-####        bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1)
-####    )
-#####........................................... 
-
-fig = plt.figure(figsize=(20,10))
-ax2 = fig.add_subplot(111)
-
-ax2.scatter(gauge_R, R, marker='o',color='k')
-ax2.plot([0,60],[0,60], "red")
-ax2.set_xscale('log')
-ax2.set_yscale('log')
-ax2.grid()
-
-plt.tight_layout()
-plt.show()###
+#gauge_R = []
+#R = []
+#for month in np.arange(5,6):
+#    for day in np.arange(1,28):
+#        print(str(day).zfill(2))
+#        if (day == 22) | (day == 23) :
+#            continue
+#        try:
+#            ds = xr.open_dataset(f"2025{str(month).zfill(2)}{str(day).zfill(2)}_R_acc_barrancabermeja.nc",engine="netcdf4")
+#            da=ds["acc_R_KDP"].sel(range=slice(None,150e3))
+#        except Exception as e:
+#            print(month,day)
+#            continue
+#
+#        #da = da.where(da != 0)
+#
+#        print(da)
+#
+#        lat = da.latitude.values
+#        lon = da.longitude.values
+#        max_range = 150/111
+#        max_lat = lat + max_range
+#        max_lon = lon + max_range
+#        min_lat = lat - max_range
+#        min_lon = lon - max_range
+#    
+#        start = dt.datetime(2025,month,day+1)
+#        print("start:", start)
+#        end = dt.datetime(2025,month,day+2)
+#        print("end:", end)
+#        df = download_data(start,end,min_lat,max_lat,min_lon,max_lon) # a dia 12/05/2026 no funciona del tot correctament i has de posar un dia més perquè et retorni el dia que pertoca
+#        print(df)
+#        df["fechaobservacion"] = (
+#            pd.to_datetime(df["fechaobservacion"])
+#            .dt.tz_localize("America/Bogota")
+#            .dt.tz_convert("UTC")
+#        )
+#        print(df)
+#        df["valorobservado"] = pd.to_numeric(df["valorobservado"], errors="coerce")
+#        df = df.dropna(subset=["valorobservado"])
+#        df["latitud"] = pd.to_numeric(df["latitud"], errors="coerce")
+#        df =df.dropna(subset=["latitud"])
+#        df["longitud"] = pd.to_numeric(df["longitud"], errors="coerce")
+#        df = df.dropna(subset=["longitud"])
+#
+#        hourly_geo_df = df.groupby([
+#            'codigoestacion', 
+#            'latitud', 
+#            'longitud',
+#        ])['valorobservado'].sum().reset_index()
+#        diary_geo_df = hourly_geo_df.rename(columns={'valorobservado': 'acumulado_diario'})
+#        print(diary_geo_df)
+#
+#        ranges = [10000, 50000, 100000, 150000]
+#        number_of_colors=72
+#
+#        site= (da.longitude.values,
+#               da.latitude.values,
+#               da.altitude.values)
+#
+#        gate_lon = da["gate_longitude"].values
+#        gate_lat = da["gate_latitude"].values
+#
+#        gate_points = np.column_stack([gate_lon.ravel(), gate_lat.ravel()])
+#        tree = cKDTree(gate_points)
+#
+#        gauge_coords = diary_geo_df[['longitud', 'latitud']].values
+#        distances, indices = tree.query(gauge_coords, k=1)
+#
+#        # extend gauge_R with scalar values so gauge_R is a flat list matching R
+#        gauge_R.extend(diary_geo_df['acumulado_diario'].values.tolist())
+#
+#        # ensure indices is 1D and iterate, converting radar values to scalar floats
+#        indices = np.array(indices).ravel()
+#        for idx in indices:
+#            az_idx, rng_idx = np.unravel_index(int(idx), gate_lon.shape)
+#            val_arr = np.asarray(da.isel(azimuth=int(az_idx), range=int(rng_idx)).values).ravel()
+#            val = float(val_arr[0]) if val_arr.size > 0 else np.nan
+#            R.append(val)
+###da_geo = da.wrl.georef.georeference()
+###fig = plt.figure(figsize=(20,10))       
+###ax = fig.add_subplot(121, projection=ccrs.AzimuthalEquidistant(central_longitude=da.longitude.values, central_latitude=da.latitude.values))
+###
+###ax.set_facecolor('xkcd:light gray') 
+###
+###plot_features(ax)
+###da_geo.plot.pcolormesh(
+###    x="x",
+###    y="y",
+###    ax=ax,
+###    vmin=0,
+###    vmax=200,
+###    cmap=cmap.Colormap("ncar").to_mpl(number_of_colors),
+###    transform=ccrs.AzimuthalEquidistant(central_longitude=da.longitude.values, central_latitude=da.latitude.values),
+###    add_colorbar=True,
+###)
+###
+###zeros = diary_geo_df[diary_geo_df["acumulado_diario"] == 0]
+###nonzeros = diary_geo_df[diary_geo_df["acumulado_diario"] > 0]
+###
+###sc = ax.scatter(
+###    nonzeros["longitud"],
+###    nonzeros["latitud"],
+###    c=nonzeros["acumulado_diario"],
+###    vmin=0,
+###    vmax=200,
+###    cmap=cmap.Colormap("ncar").to_mpl(number_of_colors),
+###    s=50,
+###    edgecolors="red",
+###    linewidth=0.9,
+###    alpha=0.9,
+###    transform=ccrs.PlateCarree(),
+###    zorder=1,
+###)
+###
+###ax.scatter(
+###    zeros["longitud"],
+###    zeros["latitud"],
+###    facecolors="none",
+###    edgecolors="black",
+###    s=20,
+###    linewidth=0.5,
+###    alpha=0.7,
+###    transform=ccrs.PlateCarree(),
+###    zorder=2,
+###)
+###
+###cb = plt.colorbar(sc,ax=ax,extend="max")
+###
+###ax.set_extent([min_lon, max_lon, min_lat, max_lat], crs=ccrs.PlateCarree())
+###
+###proj_crs = ccrs.AzimuthalEquidistant(
+###    central_longitude=da.longitude.values, 
+###    central_latitude=da.latitude.values
+###)
+###
+###wrl.vis.plot_ppi_crosshair(
+###    site=site,
+###    ranges=ranges,
+###    line={"color": "None"},
+###    circle={"edgecolor": "black", "linewidth" : 1, "linestyle" : "-"},
+###    ax=ax,
+###    crs=proj_crs,
+###)
+###
+#### 3. Add the text labels
+#### Choose an angle to place the text (e.g., 45 degrees, top-right quadrant)
+###angle_deg = 45 
+###angle_rad = np.radians(angle_deg)
+###
+###for r in ranges:
+###    # Calculate x and y coordinates in meters from the center
+###    # In meteorology, 0 degrees is usually North. 
+###    # So x = r * sin(angle), y = r * cos(angle)
+###    x = r * np.sin(angle_rad)
+###    y = r * np.cos(angle_rad)
+###    
+###    # Format the label to km for readability (e.g., "12.5 km")
+###    label_text = f"{r / 1000:g} km"
+###    
+###    # Plot the text
+###    ax.text(
+###        x, y, label_text,
+###        transform=proj_crs,         # Ensures it maps to your cartopy projection correctly
+###        fontsize=9,
+###        ha='center',                # Horizontally center the text on the coordinate
+###        va='center',                # Vertically center the text on the coordinate
+###        color='black',
+###        # Adding a small, semi-transparent white box behind the text makes it 
+###        # readable even if it overlaps with intense radar MLes.
+###        bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1.5) 
+###    )
+#####print(diary_geo_df["longitud"].to_numpy())
+#####print(type(diary_geo_df["codigoestacion"].to_numpy()[0]))
+#####
+###### annotate each station individually (matplotlib expects scalar x, y, text)
+#####for _, row in diary_geo_df.iterrows():
+#####    ax.text(
+#####        row["longitud"],
+#####        row["latitud"],
+#####        str(row["codigoestacion"]),
+#####        transform=ccrs.PlateCarree(),
+#####        fontsize=8,
+#####        ha='left',
+#####        va='bottom',
+#####        color='black',
+#####        bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', pad=1)
+#####    )
+######........................................... 
+#
+## 1. Assegurem que les dades siguin arrays de NumPy per als càlculs
+#R_arr = np.array(R)
+#gauge_R_arr = np.array(gauge_R)
+#
+#mask = np.where(gauge_R_arr > 10)
+#
+#fig = plt.figure(figsize=(10,10))
+#ax2 = fig.add_subplot(111)
+#
+#ax2.scatter(gauge_R_arr, R_arr, marker='o',color='k')
+#ax2.plot([0,500],[0,500], "red")
+#ax2.set_xscale('log')
+#ax2.set_yscale('log')
+#ax2.set_xlim(5e-2,1e2)
+#ax2.set_ylim(5e-2,1e2)
+#
+#ax2.set_xticks([0.1,1.0,10.0,100.0,500.0])
+#ax2.set_yticks([0.1,1.0,10.0,100.0,500.0])
+#
+#ax2.set_xticklabels(["0.1", "1", "10", "100", "500"],size=15)
+#ax2.set_yticklabels(["0.1", "1", "10", "100", "500"],size=15)
+#
+#ax2.set_xlabel(r"Accumulated precipitation (gauge) [mm]", fontsize=15)
+#ax2.set_ylabel(r"Accumulated precipitation (radar) [mm]", fontsize=15)
+#
+#
+#ax2.grid(which="major")
+#
+## 2. Càlcul de mètriques (Pearson, RMSE i BIAS)
+#print(f"Valors únics de R: {np.unique(R_arr)}")  # Corregit 'unique_values' per 'unique' 
+#
+#rmse = np.sqrt(np.mean((R_arr - gauge_R_arr) ** 2))
+#print(f"L'RMSE és: {rmse:.4f}")
+#
+#bias = np.mean(R_arr - gauge_R_arr)
+#print(f"El biaix (BIAS) és: {bias:.4f}")
+#
+## 3. REGRESSIÓ LINEAL (Aquí apliquem el .reshape(-1, 1) necessari)
+#gauge_R_2d = gauge_R_arr.reshape(-1, 1)
+#
+#model = LinearRegression(fit_intercept=False)
+#model.fit(gauge_R_2d, R_arr)  # Ara ja no donarà l'error de Reshape
+#
+#m = model.coef_[0]
+#c = model.intercept_
+#print(f"Equació obtinguda: y = {m:.4f}*x + {c:.4f}")
+#
+#model2 = LinearRegression(fit_intercept=True)
+#model2.fit(gauge_R_2d, R_arr)  # Ara ja no donarà l'error de Reshape
+#
+#m2 = model2.coef_[0]
+#c2 = model2.intercept_
+#print(f"Equació obtinguda: y = {m2:.4f}*x + {c2:.4f}")
+#
+#model3 = LinearRegression(fit_intercept=True)
+#model3.fit(gauge_R_2d[mask], (R_arr[mask])  # Ara ja no donarà l'error de Reshape
+#
+#m3 = model3.coef_[0]
+#c3 = model3.intercept_
+#print(f"Equació obtinguda: y = {m3:.4f}*x + {c3:.4f}")
+#
+## 4. Definició de la funció ajustada
+#def f_ajustada(x_val,m,c):
+#    return m * x_val + c
+#
+## 5. Gràfic (He corregit el conflicte on 'y' trepitjava la teva funció)
+#x_plot = np.linspace(5e-2, 5e2, 1000)
+#
+## Opció A: Si vols pintar la línia ideal y = x
+#y_ideal = x_plot
+#ax2.plot(x_plot, y_ideal, label="Truth Slope", linestyle="--", color="c")
+#
+## Opció B: Si vols pintar la línia real que ha trobat la teva regressió lineal
+#y_regressio = f_ajustada(x_plot,m,c)
+#ax2.plot(x_plot, y_regressio, label=f"y={m:.3f}x", color="red")
+#
+#y_regressio2 = f_ajustada(x_plot,m2,c2)
+#ax2.plot(x_plot, y_regressio2, label=f"y={m2:.3f}x + {c2:3f}", color="green")
+#
+#
+#y_regressio3 = f_ajustada(x_plot,m2,c2)
+#ax2.plot(x_plot, y_regressio3, label=f"y={m3:.3f}x + {c3:3f}", color="blue")
+#
+#ax2.legend(fontsize=15)
+#plt.tight_layout()
+#plt.show()#
