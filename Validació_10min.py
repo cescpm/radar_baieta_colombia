@@ -199,8 +199,9 @@ def decode_hclass_vect(arr):
 def get_(i, da):
     return xr.apply_ufunc(np.vectorize(lambda t: t[i]), da)
 
-def open_iris_dtree(filepath, decode_hclass=True):
-    dtree = xd.io.open_iris_datatree(filepath)
+def open_iris_dtree(filepath, decode_hclass=False):
+    dtree = xd.io.open_iris_datatree(filepath)#, decode_cf=False)
+
     if decode_hclass:
         dtree["/sweep_0"]["DB_HCLASS"].values = decode_hclass_vect(dtree["/sweep_0"]["DB_HCLASS"].values)
         dtree["/sweep_0"]["DB_HCLASS_meteor"] = get_(0, dtree["/sweep_0"]["DB_HCLASS"])
@@ -244,7 +245,7 @@ def parse_timestamp_from_path(s3_path):
     m = re.match(r"BAR(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})", s3_path.split("/")[-1])
     if not m: return None
     yy, mo, dd, hh, mm, ss = (int(x) for x in m.groups())
-    return dt.datetime(2000+yy, mo, dd, hh, mm, ss, tzinfo=dt.timezone.utc)
+    return dt.datetime(2000+yy, mo, dd, hh, mm, 00, tzinfo=dt.timezone.utc)
 
 def validate_ppi_timestamp(s3_path, dtree, max_delta_seconds=90):
     fname_ts = parse_timestamp_from_path(s3_path)
@@ -262,16 +263,25 @@ def validate_ppi_timestamp(s3_path, dtree, max_delta_seconds=90):
     return True
 
 def group_into_10min_windows(file_list):
+    """
+    Assign each PPI to its absolute 10-min slot of the day:
+        slot = (hour * 60 + minute) // 10
+    This is unambiguous regardless of small clock drift and avoids the
+    boundary ambiguity of delta-based grouping (a scan at exactly +600 s
+    was incorrectly included in the previous window with delta < 600).
+    """
     stamped = [(parse_timestamp_from_path(p), p) for p in file_list]
-    stamped = sorted([(ts, p) for ts, p in stamped if ts], key=lambda x: x[0])
-    groups, current, w0 = [], [], None
+    stamped = [(ts, p) for ts, p in stamped if ts is not None]
+    stamped.sort(key=lambda x: x[0])
+
+    from collections import defaultdict
+    slots = defaultdict(list)
     for ts, path in stamped:
-        if w0 is None or (ts - w0).total_seconds() < 550:
-            current.append(path)
-            if w0 is None: w0 = ts
-        else:
-            groups.append(current); current = [path]; w0 = ts
-    if current: groups.append(current)
+        slot_key = (ts.year, ts.month, ts.day, (ts.hour * 60 + ts.minute) // 10)
+        slots[slot_key].append(path)
+
+    groups = [paths for _, paths in sorted(slots.items())]
+
     for g in groups:
         if len(g) != 2:
             ts_s = parse_timestamp_from_path(g[0]).isoformat()
@@ -329,8 +339,8 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
     bytes_mem = io.BytesIO(fs.cat(s3_path))
     dtree = open_iris_dtree(bytes_mem, decode_hclass=False)
 
-    if not validate_ppi_timestamp(s3_path, dtree):
-        raise ValueError(f"Timestamp validation failed: {s3_path}")
+    #if not validate_ppi_timestamp(s3_path, dtree):
+    #    raise ValueError(f"Timestamp validation failed: {s3_path}")
 
     swp = dtree["/sweep_0"]
 
@@ -370,8 +380,14 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
     DR_safe = np.where(np.isfinite(DR), DR, 0.0)
 
     # ── Textures ─────────────────────────────────────────────────────────────
-    DBZH_da  = xr.DataArray(DBZH,  dims=["azimuth", "range"])
-    PHIDP_da = xr.DataArray(PHIDP, dims=["azimuth", "range"])
+    DBZH_da  = xr.DataArray(DBZH,  dims=["azimuth", "range"], name="DBZH")
+    DBZH_da.attrs['standard_name'] = 'radar_equivalent_reflectivity_factor_h'
+    DBZH_da.attrs['long_name'] = 'Equivalent reflectivity factor H'
+    DBZH_da.attrs['units'] = 'dBZ'
+    PHIDP_da = xr.DataArray(PHIDP, dims=["azimuth", "range"], name="PHIDP")
+    PHIDP_da.attrs['standard_name'] = 'radar_differential_phase_hv'
+    PHIDP_da.attrs['long_name'] = 'Differential phase HV'
+    PHIDP_da.attrs['units'] = 'degrees'
 
     tPHIDP = texture_of_complex_phase(
         PHIDP_da.where(PHIDP_da >= 0.0, np.nan) * 2
@@ -402,23 +418,22 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
     # ── Filtered / gap-filled fields (needed for R(A) and R(Z,ZDR)) ─────────
     max_gap = 8
     fDBZH = (xr.DataArray(np.where(met_mask_reflect, dbzh_corr, np.nan),
-                           dims=["azimuth", "range"])
+                           dims=swp["DBZH"].dims,coords=swp["DBZH"].coords,attrs=swp["DBZH"].attrs,)
              .interpolate_na(dim="range", method="linear", max_gap=max_gap)
              .values.astype(np.float32))
 
     fZDR  = (xr.DataArray(np.where(met_mask_reflect, ZDR, np.nan),
-                           dims=["azimuth", "range"])
+                           dims=swp["ZDR"].dims,coords=swp["ZDR"].coords,attrs=swp["ZDR"].attrs,)
              .interpolate_na(dim="range", method="linear", max_gap=max_gap)
              .values.astype(np.float32))
     
     # —— FIltered / unfolded PHIDP ────────────────────────────────────────────
-    r_metres = swp.coords["range"].values
+    r_metres = swp["range"].values
     resolucio_metres = r_metres[1] - r_metres[0]
     dr_km = resolucio_metres / 1000.0
-    ds = swp.ds.copy()
-    ds["PHIDP"] = ds["PHIDP"].where(met_mask_phase)
-    vulpani_phidp, vulpani_kdp = wrl.dp.phidp_kdp_vulpiani(
-        ds["PHIDP"].values, 
+    PHIDP_copy = PHIDP
+    vulpani_phidp, _ = wrl.dp.phidp_kdp_vulpiani(
+        PHIDP_copy, 
         dr=dr_km,
         ndespeckle=5,   
         winlen=15,      
@@ -468,13 +483,13 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
     # Wrap-jump guard (skip if delta <= -π) is preserved: cummax never crosses
     # a 2π boundary because the starting domain is (-π, π].
     # ── VEC ──────────────────────────────────────────────────────────────────
-    dr = 300.0
+    dr      = 300.0
     window  = 11
     half    = window // 2
 
     # Phase -> complex signal
     phidp = np.deg2rad(2.0 * PHIDP)
-    tphidp_mask = (~(tPHIDP > 15)&(DBZH < 45))
+    tphidp_mask = (~(tPHIDP > 15) & (DBZH < 45))
     z = np.exp(1j * phidp)
 
     phidp = phidp[tphidp_mask]
@@ -616,6 +631,10 @@ def match_radar_to_gauges(acc_dict, gate_lon, gate_lat, gauge_df):
 
 
 # =============================================================================
+# PARALLELLISING
+# =============================================================================
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -624,8 +643,8 @@ if __name__ == "__main__":
     # OPTIMISATION: 14 workers on 16-core machine.
     # Using all 16 starves the main process (S3 reads + accumulation);
     # leaving 2 free gives ~15% throughput gain in practice.
-    WORKERS    = 14
-    BATCH_SIZE = 28    # 2x WORKERS keeps the queue full across the batch
+    WORKERS    = 12
+    BATCH_SIZE = 24    # 2x WORKERS keeps the queue full across the batch
 
     windows = group_into_10min_windows(output_list)
     print(f"2025-{str(month).zfill(2)}-{str(day).zfill(2)}: "
@@ -639,6 +658,7 @@ if __name__ == "__main__":
     _b = io.BytesIO(fs.cat(windows[0][0]))
     _d = open_iris_dtree(_b, decode_hclass=False)
     _s = _d["/sweep_0"]
+    print(_s["PHIDP"])
 
     radar_alt_i = float(_d["/"]["altitude"].values)
     radar_lon_i = float(_d["/"]["longitude"].values)
@@ -656,6 +676,8 @@ if __name__ == "__main__":
     min_lat = radar_lat_i - max_range_deg;  max_lat = radar_lat_i + max_range_deg
     min_lon = radar_lon_i - max_range_deg;  max_lon = radar_lon_i + max_range_deg
 
+    # ── Process all windows in parallel ──────────────────────────────────────
+
     all_pairs = []
 
     for w_idx, window in enumerate(windows):
@@ -670,6 +692,8 @@ if __name__ == "__main__":
                 window[0], precomp_CBB, precomp_lon, precomp_lat, precomp_alt
             )
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"  [ERROR] First PPI failed: {e}. Skipping window."); continue
 
         shape = first_res["R_Z"].shape
@@ -713,72 +737,71 @@ if __name__ == "__main__":
         ds_10min.coords["latitude"]  = ref_dtree["latitude"].values
         ds_10min.coords["altitude"]  = ref_dtree["altitude"].values
 
-        nc_name = (f"2025{str(month).zfill(2)}{str(day).zfill(2)}"
-                   f"_{ts_label}_QPE_10min_BAR.nc")
+        nc_name = (f"{ts_label}_QPE_10min_BAR.nc")
         ds_10min.to_netcdf(nc_name)
         print(f"  Saved → {nc_name}")
 
         # ── Gauge download ────────────────────────────────────────────────────
-#        try:
-#            df_gauge = download_data(window_ts, window_end_ts,
-#                                     min_lat, max_lat, min_lon, max_lon)
-#        except Exception as e:
-#            print(f"  [WARN] Gauge download failed: {e}"); continue
-#
-#        if df_gauge.empty:
-#            print("  [INFO] No gauge data."); continue
-#
-#        for col in ["valorobservado", "latitud", "longitud"]:
-#            df_gauge[col] = pd.to_numeric(df_gauge[col], errors="coerce")
-#        df_gauge = df_gauge.dropna(subset=["valorobservado","latitud","longitud"])
-#        if df_gauge.empty: continue
-#
-#        gauge_10min = (df_gauge
-#            .groupby(["codigoestacion","latitud","longitud"], as_index=False)
-#            ["valorobservado"].sum()
-#            .rename(columns={"valorobservado": "acumulado_10min"}))
-#
-#        # Crop to 150 km
-#        range_vals = ref_swp["range"].values
-#        rmask = range_vals <= 150_000
-#        acc_crop  = {name: acc[name][:, rmask] for name in ESTIMATOR_NAMES}
-#        lon_crop  = precomp_lon[:, rmask]
-#        lat_crop  = precomp_lat[:, rmask]
-#
-#        matched = match_radar_to_gauges(acc_crop, lon_crop, lat_crop, gauge_10min)
-#        matched["window_start"] = window_ts.isoformat()
-#        all_pairs.append(matched)
-#        print(f"  Matched {len(matched)} gauge stations.")
-#
-#    # ── Daily CSV ─────────────────────────────────────────────────────────────
-#    if not all_pairs:
-#        print("\n[WARN] No pairs collected."); sys.exit(0)
-#
-#    df_all   = pd.concat(all_pairs, ignore_index=True)
-#    csv_name = (f"2025{str(month).zfill(2)}{str(day).zfill(2)}"
-#                f"_validation_pairs_BAR.csv")
-#    df_all.to_csv(csv_name, index=False)
-#    print(f"\nValidation CSV → {csv_name}  ({len(df_all)} rows)")
-#
-#    # ── Summary metrics per estimator ─────────────────────────────────────────
-#    df_v = df_all.dropna(subset=["gauge_mm"] + ESTIMATOR_NAMES)
-#    df_v = df_v[df_v["gauge_mm"] >= 0]
-#    if len(df_v) > 1:
-#        g = df_v["gauge_mm"].values
-#        print(f"\n{'─'*58}")
-#        print(f"  {'Estimator':<14} {'RMSE':>8} {'BIAS':>8} {'Pearson r':>10}  n={len(df_v)}")
-#        print(f"{'─'*58}")
-#        for name in ESTIMATOR_NAMES:
-#            r_arr = df_v[name].values
-#            ok    = np.isfinite(r_arr) & np.isfinite(g)
-#            if ok.sum() < 2:
-#                print(f"  {name:<14}  — insufficient data"); continue
-#            rmse = np.sqrt(np.mean((r_arr[ok] - g[ok])**2))
-#            bias = np.mean(r_arr[ok] - g[ok])
-#            rho  = pearsonr(g[ok], r_arr[ok])[0] if ok.sum() > 2 else np.nan
-#            print(f"  {name:<14} {rmse:8.4f} {bias:8.4f} {rho:10.4f}")
-#        print(f"{'─'*58}")
-#    else:
-#        print("[INFO] Not enough valid pairs for metrics.")
-#
-#    print("\nDone.")
+        try:
+            df_gauge = download_data(window_ts, window_end_ts,
+                                     min_lat, max_lat, min_lon, max_lon)
+        except Exception as e:
+            print(f"  [WARN] Gauge download failed: {e}"); continue
+
+        if df_gauge.empty:
+            print("  [INFO] No gauge data."); continue
+
+        for col in ["valorobservado", "latitud", "longitud"]:
+            df_gauge[col] = pd.to_numeric(df_gauge[col], errors="coerce")
+        df_gauge = df_gauge.dropna(subset=["valorobservado","latitud","longitud"])
+        if df_gauge.empty: continue
+
+        gauge_10min = (df_gauge
+            .groupby(["codigoestacion","latitud","longitud"], as_index=False)
+            ["valorobservado"].sum()
+            .rename(columns={"valorobservado": "acumulado_10min"}))
+
+        # Crop to 150 km
+        range_vals = ref_swp["range"].values
+        rmask = range_vals <= 150_000
+        acc_crop  = {name: acc[name][:, rmask] for name in ESTIMATOR_NAMES}
+        lon_crop  = precomp_lon[:, rmask]
+        lat_crop  = precomp_lat[:, rmask]
+
+        matched = match_radar_to_gauges(acc_crop, lon_crop, lat_crop, gauge_10min)
+        matched["window_start"] = window_ts.isoformat()
+        all_pairs.append(matched)
+        print(f"  Matched {len(matched)} gauge stations.")
+
+    # ── Daily CSV ─────────────────────────────────────────────────────────────
+    if not all_pairs:
+        print("\n[WARN] No pairs collected."); sys.exit(0)
+
+    df_all   = pd.concat(all_pairs, ignore_index=True)
+    csv_name = (f"2025{str(month).zfill(2)}{str(day).zfill(2)}"
+                f"_validation_pairs_BAR.csv")
+    df_all.to_csv(csv_name, index=False)
+    print(f"\nValidation CSV → {csv_name}  ({len(df_all)} rows)")
+
+    # ── Summary metrics per estimator ─────────────────────────────────────────
+    df_v = df_all.dropna(subset=["gauge_mm"] + ESTIMATOR_NAMES)
+    df_v = df_v[df_v["gauge_mm"] >= 0]
+    if len(df_v) > 1:
+        g = df_v["gauge_mm"].values
+        print(f"\n{'─'*58}")
+        print(f"  {'Estimator':<14} {'RMSE':>8} {'BIAS':>8} {'Pearson r':>10}  n={len(df_v)}")
+        print(f"{'─'*58}")
+        for name in ESTIMATOR_NAMES:
+            r_arr = df_v[name].values
+            ok    = np.isfinite(r_arr) & np.isfinite(g)
+            if ok.sum() < 2:
+                print(f"  {name:<14}  — insufficient data"); continue
+            rmse = np.sqrt(np.mean((r_arr[ok] - g[ok])**2))
+            bias = np.mean(r_arr[ok] - g[ok])
+            rho  = pearsonr(g[ok], r_arr[ok])[0] if ok.sum() > 2 else np.nan
+            print(f"  {name:<14} {rmse:8.4f} {bias:8.4f} {rho:10.4f}")
+        print(f"{'─'*58}")
+    else:
+        print("[INFO] Not enough valid pairs for metrics.")
+
+    print("\nDone.")
