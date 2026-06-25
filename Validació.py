@@ -95,6 +95,7 @@ def plot_features(ax,labels_and_gridlines=False,c='gray',departments=True):
         gl = ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False)
         gl.top_labels = False
         gl.right_labels = False
+
 # HELPERS
 ###############################################################################
 
@@ -173,6 +174,7 @@ def texture_of_complex_phase(FIELD, phidp_field=None, phidp_texture_field=None):
     w_texture_complex = compute_texture((np.real(complex_phase) + 1.0) * 180/2.0)
 
     return w_texture_complex
+
 
 # =====================================================================
 # 1. ESTIMADORS QPE CORREGITS I CONFIGURATS PER A COLÒMBIA (BANDA C)
@@ -557,6 +559,7 @@ def R_per_sweep(s3_path):
         radar_alt = float(dtree["/"]["altitude"].values)+35
 
     site = (radar_lon, radar_lat, radar_alt)
+    
     azimuth   = swp["azimuth"].data
     range     = swp["range"].data
     elangle   = swp["elevation"].data
@@ -577,15 +580,11 @@ def R_per_sweep(s3_path):
     swp.coords["gate_height"] = (('azimuth', 'range'), alt)
     polcoords = coords[..., :2]
 
-    texture_thresh=30
-    zdr_thresh=7
-    dr_thresh=-12.0
-
-    DBZH = swp["DBZH"]
-    PHIDP = swp["PHIDP"]
-    KDP = swp["KDP"]
-    RHOHV = swp["RHOHV"]
-    ZDR = swp["ZDR"]
+    DBZH = swp["DBZH"].values.astype(np.float32)
+    PHIDP = swp["PHIDP"].values.astype(np.float32)
+    KDP = swp["KDP"].values.astype(np.float32)
+    RHOHV = swp["RHOHV"].values.astype(np.float32)
+    ZDR = swp["ZDR"].values.astype(np.float32)
 
     polarvalues = wrl.ipol.map_coordinates(
         rastercoords, rastervalues, polcoords, order=3, prefilter=False
@@ -608,10 +607,6 @@ def R_per_sweep(s3_path):
             "range": swp["range"]
         }
     )
-    #swp["CBB"].attrs["long_name"] = "Cumulative Beam Blockage Fraction"
-    #swp["CBB"].attrs["units"] = "1"
-    #swp["CBB"].attrs["comment"] = "Calculat mitjançant fusió estricta de dos DEMs USGS corregits per a la llanura del Carib."
-
     dbzh = DBZH.values
     cbb = swp["CBB"].values
     dbzh_corr = np.copy(dbzh)
@@ -694,7 +689,7 @@ def R_per_sweep(s3_path):
     swp["met_mask"] = met_mask
 
     no_met_mask_no_texture = (
-          ((DR > dr_thresh) & (DBZH < 35.0))
+          ((DR > -12) & (DBZH < 35.0))
         | ((tDBZH > 20.0) & (DBZH < 30.0))
         | (DBZH <= 0.0)
         | (CBB == 1.0)
@@ -727,132 +722,132 @@ def R_per_sweep(s3_path):
 
     swp["met_mask_no_texture"] = met_mask_no_texture
 
-    #r_metres = swp.coords["range"].values
-    #resolucio_metres = r_metres[1] - r_metres[0]
-    #dr_km = resolucio_metres / 1000.0
-    #ds = swp.ds.copy()
-    #ds["PHIDP"] = ds["PHIDP"].where(met_mask)
-    #vulpani_phidp, vulpani_kdp = wrl.dp.phidp_kdp_vulpiani(
-    #    ds["PHIDP"].values, 
-    #    dr=dr_km,
-    #    ndespeckle=5,   
-    #    winlen=15,      
-    #    niter=3,         
-    #)
-    #UNFOLD_PHIDP = xr.DataArray((vulpani_phidp), dims=ds.PHIDP.dims, coords=ds.PHIDP.coords)
-    ##swp["uKDP"] = xr.DataArray(vulpani_kdp, dims=ds.PHIDP.dims, coords=ds.PHIDP.coords)
-    ##swp["uPHIDP"] = UNFOLD_PHIDP
-#
-    #fDBZH = xr.where(
-    #    met_mask_no_texture,
-    #    DBZH_terrain_corr,
-    #    np.nan
-    #)
-    #max_interpolation_gap = 8
-    #fDBZH = fDBZH.interpolate_na(
-    #    dim="range", 
-    #    method="linear", 
-    #    max_gap=max_interpolation_gap
-    #)
-    #fZDR = xr.where(
-    #    met_mask_no_texture,
-    #    ZDR,
-    #    np.nan
-    #)
-    #fZDR = fZDR.interpolate_na(
-    #    dim="range", 
-    #    method="linear", 
-    #    max_gap=max_interpolation_gap
-    #)
-    #swp["fZDR"] = fZDR
-    #fPHIDP = xr.where(
-    #    met_mask,
-    #    UNFOLD_PHIDP,
-    #    np.nan
-    #)
-    #swp["fPHIDP"] = fPHIDP
-#
-    #phidp_inicial = fPHIDP.copy()
-    #vals_mediana = median_filter(
-    #    phidp_inicial.values,
-    #    size=(1, 5)
-    #)
-    #phidp_mediana = xr.DataArray(
-    #    vals_mediana,
-    #    dims=phidp_inicial.dims,
-    #    coords=phidp_inicial.coords
-    #)
-    #sPHIDP = phidp_mediana.rolling(
-    #    range=25,
-    #    center=True,
-    #    min_periods=1
-    #).mean()
-    #sPHIDP_clean = sPHIDP.fillna(0.0)
-#
-    #vals = np.copy(sPHIDP_clean.values)
-    #for az in np.arange(vals.shape[0]):
-    #    ray = vals[az]
-    #    for i in np.arange(1, len(ray)):
-    #        if np.isfinite(ray[i-1]) and np.isfinite(ray[i]):
-    #            if ray[i] < ray[i-1]:
-    #                ray[i] = ray[i-1]
-    #    vals[az] = ray
-    #vals = median_filter(vals, size=(1, 4))
-    #vals = median_filter(vals, size=(1, 8))
-    #vals_with_nan = np.copy(vals)
-    #vals_with_nan[~met_mask.values] = np.nan
-#
-    #sPHIDP = xr.DataArray(
-    #    vals_with_nan,
-    #    dims=fPHIDP.dims,
-    #    coords=fPHIDP.coords
-    #)
-#
-    #cKDP = xr.where(
-    #    met_mask,
-    #    KDP,
-    #    np.nan
-    #)
-    #swp["cKDP"] = cKDP
-#
-    #r_metres = swp.coords["range"].values
-    #resolucio_metres = r_metres[1] - r_metres[0]
-    #dr_km = resolucio_metres / 1000.0
-    #dKDP_calculat = wrl.dp.kdp_from_phidp(
-    #    sPHIDP.values, 
-    #    winlen=7,
-    #    dr=dr_km,
-    #    method="lanczos_conv"
-    #)
-    #dKDP_net = np.where(dKDP_calculat < 0.0, 0.0, dKDP_calculat)
-    #dKDP_net = median_filter(dKDP_net, size=(1, 3))
-    #dKDP_final = np.copy(dKDP_net)
-    #dKDP_final[~met_mask.values] = np.nan
-    #dKDP = xr.DataArray(
-    #    dKDP_final,
-    #    dims=cKDP.dims,
-    #    coords=cKDP.coords,
-    #)
-    #swp["dKDP"] = dKDP
-#
-    #alpha = calc_alpha_per_sweep(swp)
-#
-    #A = alpha * dKDP
-    #dr = float(
-    #    swp["range"][1] - swp["range"][0]
-    #) 
-    #dr_km = dr / 1000.0
-    #pia_vals = 2 * np.nancumsum(
-    #    A.values * dr_km,
-    #    axis=1
-    #)
-    #PIA = xr.DataArray(
-    #    pia_vals,
-    #    dims=A.dims,
-    #    coords=A.coords
-    #)
-    #cDBZH_attcorr = fDBZH + PIA
-    #swp["cDBZH"] = cDBZH_attcorr
+    r_metres = swp.coords["range"].values
+    resolucio_metres = r_metres[1] - r_metres[0]
+    dr_km = resolucio_metres / 1000.0
+    ds = swp.ds.copy()
+    ds["PHIDP"] = ds["PHIDP"].where(met_mask)
+    vulpani_phidp, vulpani_kdp = wrl.dp.phidp_kdp_vulpiani(
+        ds["PHIDP"].values, 
+        dr=dr_km,
+        ndespeckle=5,   
+        winlen=15,      
+        niter=3,         
+    )
+    UNFOLD_PHIDP = xr.DataArray((vulpani_phidp), dims=ds.PHIDP.dims, coords=ds.PHIDP.coords)
+    #swp["uKDP"] = xr.DataArray(vulpani_kdp, dims=ds.PHIDP.dims, coords=ds.PHIDP.coords)
+    #swp["uPHIDP"] = UNFOLD_PHIDP
+
+    fDBZH = xr.where(
+        met_mask_no_texture,
+        DBZH_terrain_corr,
+        np.nan
+    )
+    max_interpolation_gap = 8
+    fDBZH = fDBZH.interpolate_na(
+        dim="range", 
+        method="linear", 
+        max_gap=max_interpolation_gap
+    )
+    fZDR = xr.where(
+        met_mask_no_texture,
+        ZDR,
+        np.nan
+    )
+    fZDR = fZDR.interpolate_na(
+        dim="range", 
+        method="linear", 
+        max_gap=max_interpolation_gap
+    )
+    swp["fZDR"] = fZDR
+    fPHIDP = xr.where(
+        met_mask,
+        UNFOLD_PHIDP,
+        np.nan
+    )
+    swp["fPHIDP"] = fPHIDP
+
+    phidp_inicial = fPHIDP.copy()
+    vals_mediana = median_filter(
+        phidp_inicial.values,
+        size=(1, 5)
+    )
+    phidp_mediana = xr.DataArray(
+        vals_mediana,
+        dims=phidp_inicial.dims,
+        coords=phidp_inicial.coords
+    )
+    sPHIDP = phidp_mediana.rolling(
+        range=25,
+        center=True,
+        min_periods=1
+    ).mean()
+    sPHIDP_clean = sPHIDP.fillna(0.0)
+
+    vals = np.copy(sPHIDP_clean.values)
+    for az in np.arange(vals.shape[0]):
+        ray = vals[az]
+        for i in np.arange(1, len(ray)):
+            if np.isfinite(ray[i-1]) and np.isfinite(ray[i]):
+                if ray[i] < ray[i-1]:
+                    ray[i] = ray[i-1]
+        vals[az] = ray
+    vals = median_filter(vals, size=(1, 4))
+    vals = median_filter(vals, size=(1, 8))
+    vals_with_nan = np.copy(vals)
+    vals_with_nan[~met_mask.values] = np.nan
+
+    sPHIDP = xr.DataArray(
+        vals_with_nan,
+        dims=fPHIDP.dims,
+        coords=fPHIDP.coords
+    )
+
+    cKDP = xr.where(
+        met_mask,
+        KDP,
+        np.nan
+    )
+    swp["cKDP"] = cKDP
+
+    r_metres = swp.coords["range"].values
+    resolucio_metres = r_metres[1] - r_metres[0]
+    dr_km = resolucio_metres / 1000.0
+    dKDP_calculat = wrl.dp.kdp_from_phidp(
+        sPHIDP.values, 
+        winlen=7,
+        dr=dr_km,
+        method="lanczos_conv"
+    )
+    dKDP_net = np.where(dKDP_calculat < 0.0, 0.0, dKDP_calculat)
+    dKDP_net = median_filter(dKDP_net, size=(1, 3))
+    dKDP_final = np.copy(dKDP_net)
+    dKDP_final[~met_mask.values] = np.nan
+    dKDP = xr.DataArray(
+        dKDP_final,
+        dims=cKDP.dims,
+        coords=cKDP.coords,
+    )
+    swp["dKDP"] = dKDP
+
+    alpha = calc_alpha_per_sweep(swp)
+
+    A = alpha * dKDP
+    dr = float(
+        swp["range"][1] - swp["range"][0]
+    ) 
+    dr_km = dr / 1000.0
+    pia_vals = 2 * np.nancumsum(
+        A.values * dr_km,
+        axis=1
+    )
+    PIA = xr.DataArray(
+        pia_vals,
+        dims=A.dims,
+        coords=A.coords
+    )
+    cDBZH_attcorr = fDBZH + PIA
+    swp["cDBZH"] = cDBZH_attcorr
 
     # Parameters
     dr = 300.0          # gate spacing [m]
@@ -936,16 +931,15 @@ def R_per_sweep(s3_path):
 
     swp["dKDP2"] = dKDP2     
 
-    #R_A_103 = 1900 * (A ** 1.03)
-    #R_A_100 = 1900 * (A ** 1.00) 
-    #R_A_097 = 1900 * (A ** 0.97)
-    #R_A_121 = 1900 * (A ** 1.21)
-    #R_raw_KDP = 42.1 * (KDP  ** 0.79)
-    #R_cKDP = 42.1 * (cKDP  ** 0.79)
-    #R_KDP =  42.1 * (dKDP  ** 0.79)
+    R_A_100 = 1900 * (A ** 1.00) 
+    R_Z_ZDR = 0.0067 * ((10**(cDBZH_attcorr/10))** 0.93) * (10.0 **(-0.34 * fZDR))
+    R_KDP_ZDR = 52.0 * (KDP ** 0.94) * (10.0 ** (-0.39 * fZDR))
+    R_raw_KDP = 42.1 * (KDP  ** 0.79)
+    R_cKDP = 42.1 * (cKDP  ** 0.79)
+    R_KDP =  42.1 * (dKDP  ** 0.79)
     R_KDP2 = 42.1 * (dKDP2.where(met_mask) ** 0.79)    
-    #R_Z = (10**(cDBZH_attcorr/10)/250)**(1/1.2)
-    #R_Z_raw = (10**(DBZH/10)/250)**(1/1.2)
+    R_Z = (10**(cDBZH_attcorr/10)/250)**(1/1.2)
+    R_Z_raw = (10**(DBZH/10)/250)**(1/1.2)
 
     #r_a_val = R_A.values.astype(np.float32)
     #r_raw_kdp_val = R_raw_KDP.values.astype(np.float32)
@@ -960,7 +954,7 @@ def R_per_sweep(s3_path):
     del bytes_en_memoria
     gc.collect()
 
-    return R_KDP2 #return R_A_103,R_A_100,R_A_097,R_A_121,R_raw_KDP,R_cKDP,R_KDP,R_KDP2,R_Z,R_Z_raw
+    return R_A_100,R_raw_KDP,R_cKDP,R_KDP,R_KDP2,R_Z,R_Z_raw,R_Z_ZDR,R_KDP_ZDR
 
 def R_per_sweep_1st(s3_path):
 
@@ -1154,132 +1148,132 @@ def R_per_sweep_1st(s3_path):
 
     swp["met_mask_no_texture"] = met_mask_no_texture
 
-    #r_metres = swp.coords["range"].values
-    #resolucio_metres = r_metres[1] - r_metres[0]
-    #dr_km = resolucio_metres / 1000.0
-    #ds = swp.ds.copy()
-    #ds["PHIDP"] = ds["PHIDP"].where(met_mask)
-    #vulpani_phidp, vulpani_kdp = wrl.dp.phidp_kdp_vulpiani(
-    #    ds["PHIDP"].values, 
-    #    dr=dr_km,
-    #    ndespeckle=5,   
-    #    winlen=15,      
-    #    niter=3,         
-    #)
-    #UNFOLD_PHIDP = xr.DataArray((vulpani_phidp), dims=ds.PHIDP.dims, coords=ds.PHIDP.coords)
-    ##swp["uKDP"] = xr.DataArray(vulpani_kdp, dims=ds.PHIDP.dims, coords=ds.PHIDP.coords)
-    ##swp["uPHIDP"] = UNFOLD_PHIDP
-#
-    #fDBZH = xr.where(
-    #    met_mask_no_texture,
-    #    DBZH_terrain_corr,
-    #    np.nan
-    #)
-    #max_interpolation_gap = 8
-    #fDBZH = fDBZH.interpolate_na(
-    #    dim="range", 
-    #    method="linear", 
-    #    max_gap=max_interpolation_gap
-    #)
-    #fZDR = xr.where(
-    #    met_mask_no_texture,
-    #    ZDR,
-    #    np.nan
-    #)
-    #fZDR = fZDR.interpolate_na(
-    #    dim="range", 
-    #    method="linear", 
-    #    max_gap=max_interpolation_gap
-    #)
-    #swp["fZDR"] = fZDR
-    #fPHIDP = xr.where(
-    #    met_mask,
-    #    UNFOLD_PHIDP,
-    #    np.nan
-    #)
-    #swp["fPHIDP"] = fPHIDP
-#
-    #phidp_inicial = fPHIDP.copy()
-    #vals_mediana = median_filter(
-    #    phidp_inicial.values,
-    #    size=(1, 5)
-    #)
-    #phidp_mediana = xr.DataArray(
-    #    vals_mediana,
-    #    dims=phidp_inicial.dims,
-    #    coords=phidp_inicial.coords
-    #)
-    #sPHIDP = phidp_mediana.rolling(
-    #    range=25,
-    #    center=True,
-    #    min_periods=1
-    #).mean()
-    #sPHIDP_clean = sPHIDP.fillna(0.0)
-#
-    #vals = np.copy(sPHIDP_clean.values)
-    #for az in np.arange(vals.shape[0]):
-    #    ray = vals[az]
-    #    for i in np.arange(1, len(ray)):
-    #        if np.isfinite(ray[i-1]) and np.isfinite(ray[i]):
-    #            if ray[i] < ray[i-1]:
-    #                ray[i] = ray[i-1]
-    #    vals[az] = ray
-    #vals = median_filter(vals, size=(1, 4))
-    #vals = median_filter(vals, size=(1, 8))
-    #vals_with_nan = np.copy(vals)
-    #vals_with_nan[~met_mask.values] = np.nan
-#
-    #sPHIDP = xr.DataArray(
-    #    vals_with_nan,
-    #    dims=fPHIDP.dims,
-    #    coords=fPHIDP.coords
-    #)
-#
-    #cKDP = xr.where(
-    #    met_mask,
-    #    KDP,
-    #    np.nan
-    #)
-    #swp["cKDP"] = cKDP
-#
-    #r_metres = swp.coords["range"].values
-    #resolucio_metres = r_metres[1] - r_metres[0]
-    #dr_km = resolucio_metres / 1000.0
-    #dKDP_calculat = wrl.dp.kdp_from_phidp(
-    #    sPHIDP.values, 
-    #    winlen=7,
-    #    dr=dr_km,
-    #    method="lanczos_conv"
-    #)
-    #dKDP_net = np.where(dKDP_calculat < 0.0, 0.0, dKDP_calculat)
-    #dKDP_net = median_filter(dKDP_net, size=(1, 3))
-    #dKDP_final = np.copy(dKDP_net)
-    #dKDP_final[~met_mask.values] = np.nan
-    #dKDP = xr.DataArray(
-    #    dKDP_final,
-    #    dims=cKDP.dims,
-    #    coords=cKDP.coords,
-    #)
-    #swp["dKDP"] = dKDP
-#
-    #alpha = calc_alpha_per_sweep(swp)
-#
-    #A = alpha * cKDP
-    #dr = float(
-    #    swp["range"][1] - swp["range"][0]
-    #) 
-    #dr_km = dr / 1000.0
-    #pia_vals = 2 * np.nancumsum(
-    #    A.values * dr_km,
-    #    axis=1
-    #)
-    #PIA = xr.DataArray(
-    #    pia_vals,
-    #    dims=A.dims,
-    #    coords=A.coords
-    #)
-    #cDBZH_attcorr = fDBZH + PIA
-    #swp["cDBZH"] = cDBZH_attcorr
+    r_metres = swp.coords["range"].values
+    resolucio_metres = r_metres[1] - r_metres[0]
+    dr_km = resolucio_metres / 1000.0
+    ds = swp.ds.copy()
+    ds["PHIDP"] = ds["PHIDP"].where(met_mask)
+    vulpani_phidp, vulpani_kdp = wrl.dp.phidp_kdp_vulpiani(
+        ds["PHIDP"].values, 
+        dr=dr_km,
+        ndespeckle=5,   
+        winlen=15,      
+        niter=3,         
+    )
+    UNFOLD_PHIDP = xr.DataArray((vulpani_phidp), dims=ds.PHIDP.dims, coords=ds.PHIDP.coords)
+    #swp["uKDP"] = xr.DataArray(vulpani_kdp, dims=ds.PHIDP.dims, coords=ds.PHIDP.coords)
+    #swp["uPHIDP"] = UNFOLD_PHIDP
+
+    fDBZH = xr.where(
+        met_mask_no_texture,
+        DBZH_terrain_corr,
+        np.nan
+    )
+    max_interpolation_gap = 8
+    fDBZH = fDBZH.interpolate_na(
+        dim="range", 
+        method="linear", 
+        max_gap=max_interpolation_gap
+    )
+    fZDR = xr.where(
+        met_mask_no_texture,
+        ZDR,
+        np.nan
+    )
+    fZDR = fZDR.interpolate_na(
+        dim="range", 
+        method="linear", 
+        max_gap=max_interpolation_gap
+    )
+    swp["fZDR"] = fZDR
+    fPHIDP = xr.where(
+        met_mask,
+        UNFOLD_PHIDP,
+        np.nan
+    )
+    swp["fPHIDP"] = fPHIDP
+    
+    phidp_inicial = fPHIDP.copy()
+    vals_mediana = median_filter(
+        phidp_inicial.values,
+        size=(1, 5)
+    )
+    phidp_mediana = xr.DataArray(
+        vals_mediana,
+        dims=phidp_inicial.dims,
+        coords=phidp_inicial.coords
+    )
+    sPHIDP = phidp_mediana.rolling(
+        range=25,
+        center=True,
+        min_periods=1
+    ).mean()
+    sPHIDP_clean = sPHIDP.fillna(0.0)
+
+    vals = np.copy(sPHIDP_clean.values)
+    for az in np.arange(vals.shape[0]):
+        ray = vals[az]
+        for i in np.arange(1, len(ray)):
+            if np.isfinite(ray[i-1]) and np.isfinite(ray[i]):
+                if ray[i] < ray[i-1]:
+                    ray[i] = ray[i-1]
+        vals[az] = ray
+    vals = median_filter(vals, size=(1, 4))
+    vals = median_filter(vals, size=(1, 8))
+    vals_with_nan = np.copy(vals)
+    vals_with_nan[~met_mask.values] = np.nan
+
+    sPHIDP = xr.DataArray(
+        vals_with_nan,
+        dims=fPHIDP.dims,
+        coords=fPHIDP.coords
+    )
+
+    cKDP = xr.where(
+        met_mask,
+        KDP,
+        np.nan
+    )
+    swp["cKDP"] = cKDP
+
+    r_metres = swp.coords["range"].values
+    resolucio_metres = r_metres[1] - r_metres[0]
+    dr_km = resolucio_metres / 1000.0
+    dKDP_calculat = wrl.dp.kdp_from_phidp(
+        sPHIDP.values, 
+        winlen=7,
+        dr=dr_km,
+        method="lanczos_conv"
+    )
+    dKDP_net = np.where(dKDP_calculat < 0.0, 0.0, dKDP_calculat)
+    dKDP_net = median_filter(dKDP_net, size=(1, 3))
+    dKDP_final = np.copy(dKDP_net)
+    dKDP_final[~met_mask.values] = np.nan
+    dKDP = xr.DataArray(
+        dKDP_final,
+        dims=cKDP.dims,
+        coords=cKDP.coords,
+    )
+    swp["dKDP"] = dKDP
+
+    alpha = calc_alpha_per_sweep(swp)
+
+    A = alpha * cKDP
+    dr = float(
+        swp["range"][1] - swp["range"][0]
+    ) 
+    dr_km = dr / 1000.0
+    pia_vals = 2 * np.nancumsum(
+        A.values * dr_km,
+        axis=1
+    )
+    PIA = xr.DataArray(
+        pia_vals,
+        dims=A.dims,
+        coords=A.coords
+    )
+    cDBZH_attcorr = fDBZH + PIA
+    swp["cDBZH"] = cDBZH_attcorr
 
     #swp["R"] = merge_rainfall(swp,alpha) #((10**(cDBZH_attcorr/10))/250)**(1/1.2) #
 
@@ -1366,56 +1360,52 @@ def R_per_sweep_1st(s3_path):
 
     swp["dKDP2"] = dKDP2
 
-    #R_A_103 = 1900 * (A ** 1.03)
-    #R_A_100 = 1900 * (A ** 1.00) 
-    #R_A_097 = 1900 * (A ** 0.97)
-    #R_A_121 = 1900 * (A ** 1.21)
-    #R_raw_KDP = 42.1 * (KDP  ** 0.79)
-    #R_cKDP = 42.1 * (cKDP  ** 0.79)
-    #R_KDP =  42.1 * (dKDP  ** 0.79)
-    R_KDP2 = 42.1 * (dKDP2.where(met_mask) ** 0.79)
-    #R_Z = (10**(cDBZH_attcorr/10)/250)**(1/1.2)
-    #R_Z_raw = (10**(DBZH/10)/250)**(1/1.2)
+    R_A_100 = 1900 * (A ** 1.00) 
+    R_Z_ZDR = 0.0067 * ((10**(cDBZH_attcorr/10))** 0.93) * (10.0 **(-0.34 * fZDR))
+    R_KDP_ZDR = 52.0 * (KDP ** 0.94) * (10.0 ** (-0.39 * fZDR))
+    R_raw_KDP = 42.1 * (KDP  ** 0.79)
+    R_cKDP = 42.1 * (cKDP  ** 0.79)
+    R_KDP =  42.1 * (dKDP  ** 0.79)
+    R_KDP2 = 42.1 * (dKDP2.where(met_mask) ** 0.79)    
+    R_Z = (10**(cDBZH_attcorr/10)/250)**(1/1.2)
+    R_Z_raw = (10**(DBZH/10)/250)**(1/1.2)
     
-    return R_KDP2,swp,dtree,site #return R_A_103,R_A_100,R_A_097,R_A_121,R_raw_KDP,R_cKDP,R_KDP,R_KDP2,R_Z,R_Z_raw,swp,dtree,site
+    return R_A_100,R_raw_KDP,R_cKDP,R_KDP,R_KDP2,R_Z,R_Z_raw,R_Z_ZDR,R_KDP_ZDR,swp,dtree,site 
 #----------------------------------------------------------------------------------
 if __name__ == "__main__":
-    R_KDP2,swp,dtree,site = R_per_sweep_1st(output_list[0]) #R_A_103,R_A_100,R_A_097,R_A_121,R_raw_KDP,R_cKDP,R_KDP,R_KDP2,R_Z,R_Z_raw,swp,dtree,site = R_per_sweep_1st(output_list[0])
+    R_A_100,R_raw_KDP,R_cKDP,R_KDP,R_KDP2,R_Z,R_Z_raw,R_Z_ZDR,R_KDP_ZDR,swp,dtree,site = R_per_sweep_1st(output_list[0])
 
-    #acc_R_A_103  = np.zeros_like(R_A_103.values, dtype=np.float32)
-    #acc_R_A_103 += np.nan_to_num(R_A_103.values, nan=0.0) * (5/60)
+    acc_R_Z_ZDR  = np.zeros_like(R_Z_ZDR.values, dtype=np.float32)
+    acc_R_Z_ZDR += np.nan_to_num(R_Z_ZDR.values, nan=0.0) * (5/60)
 
-    #acc_R_A_100  = np.zeros_like(R_A_100.values, dtype=np.float32)
-    #acc_R_A_100 += np.nan_to_num(R_A_100.values, nan=0.0) * (5/60)
+    acc_R_A_100  = np.zeros_like(R_A_100.values, dtype=np.float32)
+    acc_R_A_100 += np.nan_to_num(R_A_100.values, nan=0.0) * (5/60)
 
-    #acc_R_A_097  = np.zeros_like(R_A_097.values, dtype=np.float32)
-    #acc_R_A_097 += np.nan_to_num(R_A_097.values, nan=0.0) * (5/60)
+    acc_R_KDP_ZDR  = np.zeros_like(R_Z_ZDR.values, dtype=np.float32)
+    acc_R_KDP_ZDR += np.nan_to_num(R_Z_ZDR.values, nan=0.0) * (5/60)
 
-    #acc_R_A_121  = np.zeros_like(R_A_121.values, dtype=np.float32)
-    #acc_R_A_121 += np.nan_to_num(R_A_121.values, nan=0.0) * (5/60)
+    acc_R_raw_KDP  = np.zeros_like(R_raw_KDP.values, dtype=np.float32)
+    acc_R_raw_KDP += np.nan_to_num(R_raw_KDP.values, nan=0.0) * (5/60)
 
-    #acc_R_raw_KDP  = np.zeros_like(R_raw_KDP.values, dtype=np.float32)
-    #acc_R_raw_KDP += np.nan_to_num(R_raw_KDP.values, nan=0.0) * (5/60)
+    acc_R_cKDP  = np.zeros_like(R_cKDP.values, dtype=np.float32)
+    acc_R_cKDP += np.nan_to_num(R_cKDP.values, nan=0.0) * (5/60)
 
-    #acc_R_cKDP  = np.zeros_like(R_cKDP.values, dtype=np.float32)
-    #acc_R_cKDP += np.nan_to_num(R_cKDP.values, nan=0.0) * (5/60)
-
-    #acc_R_KDP  = np.zeros_like(R_KDP.values, dtype=np.float32)
-    #acc_R_KDP += np.nan_to_num(R_KDP.values, nan=0.0) * (5/60)
+    acc_R_dKDP  = np.zeros_like(R_KDP.values, dtype=np.float32)
+    acc_R_dKDP += np.nan_to_num(R_KDP.values, nan=0.0) * (5/60)
 
     acc_R_KDP2  = np.zeros_like(R_KDP2.values, dtype=np.float32)
     acc_R_KDP2 += np.nan_to_num(R_KDP2.values, nan=0.0) * (5/60)
 
-    #acc_R_Z  = np.zeros_like(R_Z.values, dtype=np.float32)
-    #acc_R_Z += np.nan_to_num(R_Z.values, nan=0.0) * (5/60)
+    acc_R_Z  = np.zeros_like(R_Z.values, dtype=np.float32)
+    acc_R_Z += np.nan_to_num(R_Z.values, nan=0.0) * (5/60)
 
-    #acc_R_Z_raw  = np.zeros_like(R_Z_raw.values, dtype=np.float32)
-    #acc_R_Z_raw += np.nan_to_num(R_Z_raw.values, nan=0.0) * (5/60)
+    acc_R_Z_raw  = np.zeros_like(R_Z_raw.values, dtype=np.float32)
+    acc_R_Z_raw += np.nan_to_num(R_Z_raw.values, nan=0.0) * (5/60)
 
     errors = 0
 
-    WORKERS = 8
-    BATCH_SIZE = 16
+    WORKERS = 14
+    BATCH_SIZE = 28
 
     files_to_process = output_list[1:]
 
