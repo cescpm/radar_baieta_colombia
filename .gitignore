@@ -19,3 +19,7 @@ pngs/
 *.nc
 *.xml
 *.gz
+*.csv
+radar_cache/
+*.png
+*.log

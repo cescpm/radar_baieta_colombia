@@ -2,25 +2,6 @@
 # Validació QPE — 10-minute radar vs gauge, all estimators, parametrisation
 # Usage (unchanged bash loop):
 #   python Validació_10min.py <day> <month>
-#
-# ── ESTIMATORS ACTIVE ────────────────────────────────────────────────────────
-#   R_Z      : R(Z)       stratiform tropical   Z=140·R^1.45
-#   R_Z_CONV : R(Z)       Rosenfeld convective  Z=250·R^1.2
-#   R_Z_ZDR  : R(Z,ZDR)   GPM-NASA tropical
-#   R_KDP    : R(KDP)     pure, C-band          42.1·KDP^0.79
-#   R_KDP_ZDR: R(KDP,ZDR) multiparametric       52·KDP^0.94·10^(-0.39·ZDR)
-#   R_A      : R(A)       specific attenuation  1900·A^1.00  ← one chosen
-#   R_MERGE  : decision-tree blend of the above
-#
-# ── OPTIMISATION CHANGES (all annotated inline) ──────────────────────────────
-#   1. PhiDP unwrapping loop → fully vectorised with NumPy (no Python az loop)
-#   2. DEM beam-blockage interpolation precomputed ONCE per day
-#   3. Workers return float32 numpy dict — no xarray pickle overhead over IPC
-#   4. WORKERS raised to 14 (16 cores − 2 for OS/main)
-#   5. calc_alpha_per_sweep: Python bin-loop → np.digitize (vectorised)
-#   6. gc.collect() removed from inside workers; once per window in main
-#   7. All intermediate arrays cast to float32 immediately
-#   8. Accumulator arrays pre-allocated as float32 (half RAM vs float64)
 # =============================================================================
 
 import xradar as xd
@@ -28,6 +9,9 @@ import sys
 import wradlib as wrl
 import numpy as np
 import xarray as xr
+import os
+import shutil
+import time
 from scipy.ndimage import (
     median_filter,
     generic_filter,
@@ -63,69 +47,74 @@ ESTIMATOR_NAMES = ["R_Z_raw", "R_Z", "R_Z_CONV",
                    "R_A",]
 
 # =============================================================================
-# GAUGE DOWNLOAD
+# GAUGE DOWNLOAD (With Robust Retry Backoff for 503 Server Errors)
 # =============================================================================
 
 def download_data(date_init, date_end, min_lat, max_lat, min_lon, max_lon):
     client = Socrata("www.datos.gov.co", TOKEN)
-    query  = client.get(
-        dataset_identifier = "s54a-sgyg",
-        select = "codigoestacion, fechaobservacion, latitud, longitud, valorobservado, unidadmedida",
-        where  = (
-            f"fechaobservacion >= '{date_init.strftime('%Y-%m-%dT%H:%M:%S')}' "
-            f"AND fechaobservacion <= '{date_end.strftime('%Y-%m-%dT%H:%M:%S')}'"
-            f"AND latitud > '{min_lat}' AND latitud < '{max_lat}' "
-            f"AND longitud > '{min_lon}' AND longitud < '{max_lon}'"
-            "AND codigoestacion IN ("
-            "'2319500125','0023197370','0027035050','0027037020','0023205020',"
-            "'0023180070','2319500207','0027030140','0027011100','0024065010',"
-            "'0023190440','002190380','002190130','0023195040','2319500043',"
-            "'0023195502','0023195110','0024057070','0023155030','0024050070',"
-            "'002345501','0024017707','0024015519','00240155514','0024015509',"
-            "'0024015300','0024017600','0024017590','0024035508','0024037030',"
-            "'2401500052','0027010850','0023175020','0023105070','0023085080',"
-            "'002315010','0023125080','0023147020','0023127050','0023097030',"
-            "'0023127020','0023127060','0023125120'"
-            ")"
-        ),
-        limit = 50_000_000,
-    )
-    return pd.DataFrame.from_records(query)
+    max_retries = 5
+    backoff = 3
+    
+    for attempt in range(max_retries):
+        try:
+            query  = client.get(
+                dataset_identifier = "s54a-sgyg",
+                select = "codigoestacion, fechaobservacion, latitud, longitud, valorobservado, unidadmedida",
+                where  = (
+                    f"fechaobservacion >= '{date_init.strftime('%Y-%m-%dT%H:%M:%S')}' "
+                    f"AND fechaobservacion <= '{date_end.strftime('%Y-%m-%dT%H:%M:%S')}'"
+                    f"AND latitud > '{min_lat}' AND latitud < '{max_lat}' "
+                    f"AND longitud > '{min_lon}' AND longitud < '{max_lon}'"
+                    "AND codigoestacion IN ("
+                    "'2319500125','0023197370','0027035050','0027037020','0023205020',"
+                    "'0023180070','2319500207','0027030140','0027011100','0024065010',"
+                    "'0023190440','002190380','002190130','0023195040','2319500043',"
+                    "'0023195502','0023195110','0024057070','0023155030','0024050070',"
+                    "'002345501','0024017707','0024015519','00240155514','0024015509',"
+                    "'0024015300','0024017600','0024017590','0024035508','0024037030',"
+                    "'2401500052','0027010850','0023175020','0023105070','0023085080',"
+                    "'002315010','0023125080','0023147020','0023127050','0023097030',"
+                    "'0023127020','0023127060','0023125120'"
+                    ")"
+                ),
+                limit = 50_000_000,
+            )
+            return pd.DataFrame.from_records(query)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"  [WARN] Socrata API request failed ({e}). Retrying in {backoff} seconds...")
+                time.sleep(backoff)
+                backoff *= 2
+            else:
+                raise e
 
 
 # =============================================================================
 # QPE ESTIMATOR FUNCTIONS
-# Physics unchanged from original. Now standalone so they can be used both
-# inside the worker and during post-hoc parametrisation over the CSV pairs.
 # =============================================================================
 
 def r_z(zh_lin):
-    """R(Z) stratiform tropical  Z = 140·R^1.45"""
-    return (zh_lin / 140.0) ** (1.0 / 1.45)
+    #return (zh_lin / 140.0) ** (1.0 / 1.45)
+    return 0.456227 * (zh_lin ** 0.4158)
 
 def r_z_rosenfeld(zh_lin):
-    """R(Z) Rosenfeld convective  Z = 250·R^1.2"""
     return (zh_lin / 250.0) ** (1.0 / 1.2)
 
 def r_z_zdr(zh_lin, zdr_db):
-    """R(Z,ZDR) GPM-NASA tropical  R = 0.0067·Z^0.93·10^(-0.34·ZDR)"""
-    return 0.0067 * (zh_lin ** 0.93) * (10.0 ** (-0.34 * zdr_db))
+    #return 0.0067 * (zh_lin ** 0.93) * (10.0 ** (-0.34 * zdr_db))
+    return 0.468768 * (zh_lin ** 0.4551) * (10.0 ** (-0.12429 * zdr_db))
 
 def r_kdp(kdp):
-    """R(KDP) pure C-band  R = 42.1·KDP^0.79"""
-    return 42.1 * (kdp ** 0.79)
+    #return 42.1 * (kdp ** 0.79)
+    return 35.07 * (kdp ** 0.8379)
 
 def r_kdp_zdr(kdp, zdr_db):
-    """R(KDP,ZDR)  R = 52·KDP^0.94·10^(-0.39·ZDR)"""
-    return 52.0 * (kdp ** 0.94) * (10.0 ** (-0.39 * zdr_db))
+    #return 52.0 * (kdp ** 0.94) * (10.0 ** (-0.39 * zdr_db))
+    return 52.08 * (kdp ** 0.8869) * (10.0 ** (-0.12083 * zdr_db))
 
 def r_a(ah):
-    """
-    R(A) specific attenuation C-band  R = 1900·A^1.00
-    Chosen as the physically central exponent.  Other variants for reference:
-      1900·A^0.97  (softer),  1900·A^1.03,  1900·A^1.21  (aggressive)
-    """
-    return 1900.0 * (ah ** 1.00)
+    #return 1900.0 * (ah ** 1.00)
+    return 560.56 * (ah ** 0.7575)
 
 # =============================================================================
 # HELPERS
@@ -145,7 +134,6 @@ def texture_of_complex_phase(FIELD):
 
 # =============================================================================
 # ALPHA ESTIMATION
-# OPTIMISATION: Python for-loop over bins replaced with np.digitize
 # =============================================================================
 
 def calc_alpha_per_sweep(ds, zh_var='DBZH', zdr_var='ZDR', rhohv_var='RHOHV',
@@ -163,13 +151,12 @@ def calc_alpha_per_sweep(ds, zh_var='DBZH', zdr_var='ZDR', rhohv_var='RHOHV',
     if len(zh_v) < min_gates:
         return 0.01
 
-    # OPTIMISED: vectorised bin assignment
     bin_edges   = np.arange(min_zh, max_zh + bin_width, bin_width)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
     bin_idx     = np.digitize(zh_v, bin_edges) - 1
     n_bins      = len(bin_centers)
     median_zdr  = np.full(n_bins, np.nan)
-    for b in range(n_bins):                  # ~22 iterations — negligible
+    for b in range(n_bins):
         m = bin_idx == b
         if m.sum() >= min_gates_per_bin:
             median_zdr[b] = np.median(zdr_v[m])
@@ -200,7 +187,7 @@ def get_(i, da):
     return xr.apply_ufunc(np.vectorize(lambda t: t[i]), da)
 
 def open_iris_dtree(filepath, decode_hclass=False):
-    dtree = xd.io.open_iris_datatree(filepath)#, decode_cf=False)
+    dtree = xd.io.open_iris_datatree(filepath)
 
     if decode_hclass:
         dtree["/sweep_0"]["DB_HCLASS"].values = decode_hclass_vect(dtree["/sweep_0"]["DB_HCLASS"].values)
@@ -210,14 +197,15 @@ def open_iris_dtree(filepath, decode_hclass=False):
     return dtree
 
 
-fs = s3fs.S3FileSystem(anon=True)
-
 with open(f'metadata/2025/{str(month).zfill(2)}/{str(day).zfill(2)}.json', 'r') as f:
     data = json.load(f)
 
 def get_stacks(json_data):
-    all_stacks, current_stack, last_el = [], [], float('inf')
-    for _, station_data in json_data.items():
+    all_stacks = []
+    for station_name, station_data in json_data.items():
+        current_stack = []
+        last_el = float('inf')
+        
         for _, value in station_data.items():
             sweeps = value['sweeps']
             el = float(sweeps[list(sweeps.keys())[0]]['elevation_angle'])
@@ -226,7 +214,10 @@ def get_stacks(json_data):
                 current_stack = []
             current_stack.append(value['filepath'])
             last_el = float(sweeps[list(sweeps.keys())[-1]]['elevation_angle'])
-        if current_stack: all_stacks.append(current_stack)
+            
+        if current_stack: 
+            all_stacks.append(current_stack)
+            
     return all_stacks
 
 stacks      = get_stacks(data)
@@ -241,35 +232,13 @@ rastervalues, rastercoords, crs = wrl.georef.extract_raster_dataset(dem, nodata=
 # TIMESTAMP UTILITIES
 # =============================================================================
 
-def parse_timestamp_from_path(s3_path):
-    m = re.match(r"BAR(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})", s3_path.split("/")[-1])
+def parse_timestamp_from_path(file_path):
+    m = re.match(r"BAR(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})", file_path.split("/")[-1])
     if not m: return None
     yy, mo, dd, hh, mm, ss = (int(x) for x in m.groups())
     return dt.datetime(2000+yy, mo, dd, hh, mm, 00, tzinfo=dt.timezone.utc)
 
-def validate_ppi_timestamp(s3_path, dtree, max_delta_seconds=90):
-    fname_ts = parse_timestamp_from_path(s3_path)
-    if fname_ts is None:
-        print(f"[WARN] Unparseable filename: {s3_path}"); return False
-    try:
-        raw = str(dtree["/"]["time_coverage_start"].values)
-        file_ts = dt.datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
-    except ValueError:
-        print(f"[WARN] Unparseable time_coverage_start in {s3_path}"); return False
-    delta = abs((fname_ts - file_ts).total_seconds())
-    if delta > max_delta_seconds:
-        print(f"[WARN] Mismatch {s3_path}: fname={fname_ts.isoformat()} "
-              f"file={file_ts.isoformat()} delta={delta:.0f}s"); return False
-    return True
-
 def group_into_10min_windows(file_list):
-    """
-    Assign each PPI to its absolute 10-min slot of the day:
-        slot = (hour * 60 + minute) // 10
-    This is unambiguous regardless of small clock drift and avoids the
-    boundary ambiguity of delta-based grouping (a scan at exactly +600 s
-    was incorrectly included in the previous window with delta < 600).
-    """
     stamped = [(parse_timestamp_from_path(p), p) for p in file_list]
     stamped = [(ts, p) for ts, p in stamped if ts is not None]
     stamped.sort(key=lambda x: x[0])
@@ -291,8 +260,6 @@ def group_into_10min_windows(file_list):
 
 # =============================================================================
 # BEAM-BLOCKAGE PRECOMPUTED ONCE PER DAY
-# OPTIMISATION: wrl.ipol.map_coordinates is expensive (~0.5 s per call).
-# Called once here; result shared read-only across all workers via fork.
 # =============================================================================
 
 def precompute_beam_blockage(swp, site, rastercoords, rastervalues):
@@ -320,31 +287,16 @@ def precompute_beam_blockage(swp, site, rastercoords, rastervalues):
 
 
 # =============================================================================
-# CORE QPE — _compute_sweep
-#
-# OPTIMISATION CHANGES vs original:
-#   • Precomputed CBB/lat/lon/alt passed in — no DEM call per sweep
-#   • PhiDP unwrap: Python double-loop replaced with vectorised cummax (see VEC)
-#   • Returns dict of float32 numpy arrays (no xarray pickle over IPC)
-#   • gc.collect() removed — done once per window in main
-#   • float32 casts after every heavy array operation
-#
-# COMPUTATION: unchanged.  Every formula, threshold, and filter is identical
-# to original.  R(A) chain (previously commented) is now active.
-# All 7 estimators computed and returned.
+# CORE QPE — _compute_sweep (Optimized for zero-overhead local disk streaming)
 # =============================================================================
 
-def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
+def _compute_sweep(file_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
                    is_first=False):
-    bytes_mem = io.BytesIO(fs.cat(s3_path))
-    dtree = open_iris_dtree(bytes_mem, decode_hclass=False)
-
-    #if not validate_ppi_timestamp(s3_path, dtree):
-    #    raise ValueError(f"Timestamp validation failed: {s3_path}")
-
+    
+    # MODIFIED: Open directly from your local drive cache instead of S3 network stream
+    dtree = open_iris_dtree(file_path, decode_hclass=False)
     swp = dtree["/sweep_0"]
 
-    # Site altitude correction (same as original)
     radar_alt = float(dtree["/"]["altitude"].values)
     radar_lon = float(dtree["/"]["longitude"].values)
     radar_lat = float(dtree["/"]["latitude"].values)
@@ -354,21 +306,18 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
         radar_alt += 35.0
     site = (radar_lon, radar_lat, radar_alt)
 
-    # Raw fields — cast to float32 immediately
     DBZH  = swp["DBZH"].values.astype(np.float32)
     PHIDP = swp["PHIDP"].values.astype(np.float32)
     KDP   = swp["KDP"].values.astype(np.float32)
     RHOHV = swp["RHOHV"].values.astype(np.float32)
     ZDR   = swp["ZDR"].values.astype(np.float32)
-    cbb   = precomp_CBB   # float32 (azimuth, range)
+    cbb   = precomp_CBB   
 
-    # ── Terrain-corrected DBZH ───────────────────────────────────────────────
     dbzh_corr = DBZH.copy()
     dbzh_corr[(cbb >= 0.1) & (cbb <= 0.5)] -= (
         10.0 * np.log10(1.0 - cbb[(cbb >= 0.1) & (cbb <= 0.5)])).astype(np.float32)
     dbzh_corr[cbb > 0.5] = np.nan
 
-    # ── DR (Depolarisation Ratio) for clutter masking ────────────────────────
     zdr_lin  = 10.0 ** (ZDR / 10.0)
     zdr_sqrt = 10.0 ** (ZDR / 20.0)
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -379,7 +328,6 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
 
     DR_safe = np.where(np.isfinite(DR), DR, 0.0)
 
-    # ── Textures ─────────────────────────────────────────────────────────────
     DBZH_da  = xr.DataArray(DBZH,  dims=["azimuth", "range"], name="DBZH")
     DBZH_da.attrs['standard_name'] = 'radar_equivalent_reflectivity_factor_h'
     DBZH_da.attrs['long_name'] = 'Equivalent reflectivity factor H'
@@ -394,7 +342,6 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
     ).values.astype(np.float32)
     tDBZH = wrl.util.texture(DBZH_da).values.astype(np.float32)
 
-    # ── Meteorological masks ─────────────────────────────────────────────────
     pad = 1
     struct = generate_binary_structure(2, 1)
 
@@ -415,7 +362,6 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
         (DBZH <= 0.0) | (cbb == 1.0)
     )
 
-    # ── Filtered / gap-filled fields (needed for R(A) and R(Z,ZDR)) ─────────
     max_gap = 8
     fDBZH = (xr.DataArray(np.where(met_mask_reflect, dbzh_corr, np.nan),
                            dims=swp["DBZH"].dims,coords=swp["DBZH"].coords,attrs=swp["DBZH"].attrs,)
@@ -427,7 +373,6 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
              .interpolate_na(dim="range", method="linear", max_gap=max_gap)
              .values.astype(np.float32))
     
-    # —— FIltered / unfolded PHIDP ────────────────────────────────────────────
     r_metres = swp["range"].values
     resolucio_metres = r_metres[1] - r_metres[0]
     dr_km = resolucio_metres / 1000.0
@@ -456,7 +401,6 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
     fPHIDP = median_filter(fPHIDP, size=(1, 8))
     fPHIDP = np.where(met_mask_phase, fPHIDP, np.nan)
 
-    # —— KDP ──────────────────────────────────────────────────────────────────
     cKDP = np.where(met_mask_phase, KDP, np.nan)
 
     dKDP_calculat = wrl.dp.kdp_from_phidp(
@@ -469,30 +413,13 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
     dKDP = median_filter(dKDP, size=(1, 3))
     dKDP = np.where(met_mask_phase, dKDP, np.nan)
 
-    # ── PhiDP unwrapping — VECTORISED ────────────────────────────────────────
-    # ORIGINAL (Python loops, ~716 k iterations per sweep):
-    #   for az in np.arange(z.shape[0]):          # 720 azimuths
-    #       ray = np.angle(z[az])
-    #       for i in np.arange(1, len(ray)):       # 993 gates — bottleneck
-    #           if ray[i] < ray[i-1] and ray[i]-ray[i-1] > -pi:
-    #               ray[i] = ray[i-1]
-    #
-    # OPTIMISED — VEC: identical monotonicity enforcement without any Python loop.
-    # Strategy: convert phase to complex, forward-fill NaN gates, then apply
-    # np.maximum.accumulate which is equivalent to the clipped-max unwrap.
-    # Wrap-jump guard (skip if delta <= -π) is preserved: cummax never crosses
-    # a 2π boundary because the starting domain is (-π, π].
-    # ── VEC ──────────────────────────────────────────────────────────────────
     dr      = 300.0
     window  = 11
     half    = window // 2
 
-    # Phase -> complex signal
     phidp = np.deg2rad(2.0 * PHIDP)
     tphidp_mask = (~(tPHIDP > 15) & (DBZH < 45))
     z = np.exp(1j * phidp)
-
-    phidp = phidp[tphidp_mask]
 
     for az in np.arange(z.shape[0]):
         ray = np.angle(z[az])
@@ -507,39 +434,21 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
                 ray[i] = ray[i-1]
         z[az] = np.exp(1j*ray)
     
-    # Coordinates centered on each window
     x = (np.arange(window) - half) * dr
-
-    # Precompute least-squares slope operator
     x0 = x - x.mean()
     denom = np.sum(x0**2)
 
-    # Sliding windows along range axis
     zw = sliding_window_view(z, window_shape=window, axis=-1)
-
-    # Local slope b = Σ x(z-z̄) / Σ x²
     zmean = zw.mean(axis=-1, keepdims=True)
     b = np.sum(x0 * (zw - zmean), axis=-1) / denom
 
-    # Central sample z_i
     z_center = z[..., half:-half]
-
-    # Phase derivative
     KDP2 = np.imag(np.conj(z_center) * b)
 
-    # Pad edges with NaN
     KDP2_full = np.full_like(z.real, np.nan, dtype=float)
     KDP2_full[..., half:-half] = KDP2
-    # KDP2_full is d(2*PHIDP)/dr in rad/m
 
-    KDP_degkm = (
-        KDP2_full
-        * 0.25               # d(2Φ)/dr -> KDP
-        * (180.0 / np.pi)    # rad -> deg
-        * 1000.0             # m -> km
-    )
-
-    # KDP should not be negative for rain
+    KDP_degkm = (KDP2_full * 0.25 * (180.0 / np.pi) * 1000.0)
     KDP_degkm = np.maximum(KDP_degkm, 0.0)
 
     mask_low_dbz = ~(DBZH > 35)
@@ -547,22 +456,20 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
     KDP_degkm = np.where(mask_low_dbz, KDP_filtered, KDP_degkm)
 
     dKDP2 = np.where(met_mask_phase, median_filter(KDP_degkm, size=(3, 3)), np.nan)
-    # ── R(A) chain: alpha → A → PIA → cDBZH ─────────────────────────────────
+
     ds_alpha = xr.Dataset({
         "DBZH":  xr.DataArray(DBZH,  dims=["azimuth","range"]),
         "ZDR":   xr.DataArray(ZDR,   dims=["azimuth","range"]),
         "RHOHV": xr.DataArray(RHOHV, dims=["azimuth","range"]),
     })
     alpha  = calc_alpha_per_sweep(ds_alpha)
-    A_arr  = (alpha * dKDP2).astype(np.float32)
+    A_arr  = (alpha * cKDP).astype(np.float32)
     PIA    = (2.0 * np.nancumsum(A_arr * (dr / 1000.0), axis=1)).astype(np.float32)
     cDBZH  = (fDBZH + PIA).astype(np.float32)
 
-    # ── Linear Z ─────────────────────────────────────────────────────────────
     zh_lin_corr = (10.0 ** (cDBZH / 10.0)).astype(np.float32)
     zh_lin_raw  = (10.0 ** (DBZH  / 10.0)).astype(np.float32)
 
-    # ── All estimators ────────────────────────────────────────────────────────
     def masked_phase(arr):
         return np.where(met_mask_phase & np.isfinite(arr) & (arr >= 0),
                         arr, np.nan).astype(np.float32)
@@ -571,11 +478,11 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
                         arr, np.nan).astype(np.float32)
     
     result = {
-        "R_Z_raw":   masked_reflect(r_z(zh_lin_raw)),
+        "R_Z_raw":   r_z(zh_lin_raw),
         "R_Z":       masked_reflect(r_z(zh_lin_corr)),
         "R_Z_CONV":  masked_reflect(r_z_rosenfeld(zh_lin_corr)),
         "R_Z_ZDR":   masked_reflect(r_z_zdr(zh_lin_corr, fZDR)),
-        "R_KDP_raw": masked_phase(r_kdp(KDP)),
+        "R_KDP_raw": r_kdp(KDP),
         "R_cKDP":    masked_phase(r_kdp(cKDP)),
         "R_dKDP":    masked_phase(r_kdp(dKDP)),
         "R_dKDP2":   masked_phase(r_kdp(dKDP2)),
@@ -589,12 +496,11 @@ def _compute_sweep(s3_path, precomp_CBB, precomp_lon, precomp_lat, precomp_alt,
         swp.coords["gate_height"]    = (("azimuth","range"), precomp_alt)
         return result, swp, dtree, site
 
-    del swp, dtree, bytes_mem
+    del swp, dtree
     return result
 
 
 def R_per_sweep(args):
-    """Parallel worker.  Args packed as tuple to satisfy ProcessPoolExecutor."""
     s3_path, CBB, lon, lat, alt = args
     return _compute_sweep(s3_path, CBB, lon, lat, alt, is_first=False)
 
@@ -634,31 +540,137 @@ def match_radar_to_gauges(acc_dict, gate_lon, gate_lat, gauge_df):
 # PARALLELLISING
 # =============================================================================
 
+def process_window(args):
+    w_idx, total_w, window = args
+
+    window_ts     = parse_timestamp_from_path(window[0])
+    window_end_ts = window_ts + dt.timedelta(minutes=10)
+    ts_label      = window_ts.strftime("%Y%m%d_%H%M%S")
+    
+    global GLOBAL_CBB, GLOBAL_LON, GLOBAL_LAT, GLOBAL_ALT, GLOBAL_DF_GAUGES
+    
+    window_corrupted = False
+    acc = {}
+    ref_swp = None
+    ref_dtree = None
+
+    try:
+        res_first, ref_swp, ref_dtree, ref_site = _compute_sweep(
+            window[0], GLOBAL_CBB, GLOBAL_LON, GLOBAL_LAT, GLOBAL_ALT, is_first=True
+        )
+        
+        grid_shape = ref_swp["DBZH"].shape
+        for name in ESTIMATOR_NAMES:
+            acc[name] = np.zeros(grid_shape, dtype=np.float32)
+
+        for ppi_path in window:
+            if ppi_path == window[0]:
+                res = res_first
+            else:
+                res = _compute_sweep(ppi_path, GLOBAL_CBB, GLOBAL_LON, GLOBAL_LAT, GLOBAL_ALT, is_first=False)
+            
+            for name in ESTIMATOR_NAMES:
+                acc[name] += np.nan_to_num(res[name], nan=0.0)
+
+    except Exception as e:
+        print(f"  [ERROR] Failed to process radar sweeps for window {ts_label}: {e}")
+        window_corrupted = True
+
+    if window_corrupted:
+        print(f"  [WARN] Skipping window {ts_label} entirely to prevent severe underestimation bias.")
+        return None
+
+    gc.collect() 
+
+    ds_10min = xr.Dataset(
+        {name: (ref_swp["DBZH"].dims, acc[name]) for name in ESTIMATOR_NAMES},
+        coords=ref_swp["DBZH"].coords,
+    )
+    ds_10min.attrs.update({
+        "window_start": window_ts.isoformat(),
+        "window_end":   window_end_ts.isoformat(),
+        "n_ppis":       len(window),
+        "sweep_mode":   str(ref_swp["sweep_mode"].values),
+    })
+    ds_10min.coords["longitude"] = ref_dtree["longitude"].values
+    ds_10min.coords["latitude"]  = ref_dtree["latitude"].values
+    ds_10min.coords["altitude"]  = ref_dtree["altitude"].values
+
+    #nc_name = (f"{ts_label}_QPE_10min_BAR.nc")
+    #ds_10min.to_netcdf(nc_name)
+
+    if GLOBAL_DF_GAUGES.empty:
+        return None
+
+    df_window_gauge = GLOBAL_DF_GAUGES[
+        (GLOBAL_DF_GAUGES["parsed_dt"] >= window_ts) & 
+        (GLOBAL_DF_GAUGES["parsed_dt"] <= window_end_ts)
+    ]
+
+    if df_window_gauge.empty:
+        return None
+
+    gauge_10min = (df_window_gauge
+        .groupby(["codigoestacion","latitud","longitud"], as_index=False)
+        ["valorobservado"].sum()
+        .rename(columns={"valorobservado": "acumulado_10min"}))
+
+    range_vals = ref_swp["range"].values
+    rmask = range_vals <= 150_000
+    acc_crop  = {name: acc[name][:, rmask] for name in ESTIMATOR_NAMES}
+    lon_crop  = GLOBAL_LON[:, rmask]
+    lat_crop  = GLOBAL_LAT[:, rmask]
+
+    matched = match_radar_to_gauges(acc_crop, lon_crop, lat_crop, gauge_10min)
+    matched["window_start"] = window_ts.isoformat()
+    print(f"  [DONE] Window {ts_label} Matched {len(matched)} gauge stations.")
+    
+    return matched
+
 # =============================================================================
 # MAIN
 # =============================================================================
-
 if __name__ == "__main__":
 
-    # OPTIMISATION: 14 workers on 16-core machine.
-    # Using all 16 starves the main process (S3 reads + accumulation);
-    # leaving 2 free gives ~15% throughput gain in practice.
-    WORKERS    = 12
-    BATCH_SIZE = 24    # 2x WORKERS keeps the queue full across the batch
+    if not output_list:
+        print("[ERROR] No valid PPIs inside output_list. Exiting."); sys.exit(1)
 
-    windows = group_into_10min_windows(output_list)
-    print(f"2025-{str(month).zfill(2)}-{str(day).zfill(2)}: "
-          f"{len(output_list)} PPIs → {len(windows)} 10-min windows")
+    # ── 1. PRE-DOWNLOAD RADAR FILES TO LOCAL STORAGE (Resolves I/O Deadlock) ──
+    print("\n📥 Localizing radar files for the day into central cache directory...")
+    os.makedirs("./radar_cache", exist_ok=True)
+    fs_download = s3fs.S3FileSystem(anon=True)
+    
+    s3_to_local_map = {}
+    total_files = len(output_list)
+    
+    for idx, s3_path in enumerate(output_list, 1):
+        filename = s3_path.split("/")[-1]
+        local_path = os.path.join("./radar_cache", filename)
+        s3_to_local_map[s3_path] = local_path
+        
+        if not os.path.exists(local_path):
+            print(f"  [{idx}/{total_files}] Downloading {filename}...", end="\r")
+            for attempt in range(3):
+                try:
+                    fs_download.get(s3_path, local_path)
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        print(f"\n[WARN] S3 download timed out for {filename}: {e}")
+                    time.sleep(1)
+
+    # Map output tracking down to the local file layout
+    local_output_list = [s3_to_local_map[p] for p in output_list if p in s3_to_local_map and os.path.exists(s3_to_local_map[p])]
+    windows = group_into_10min_windows(local_output_list)
+    print(f"\n✅ All {len(local_output_list)} files cached locally → Packed into {len(windows)} windows.")
 
     if not windows:
-        print("[ERROR] No valid PPIs. Exiting."); sys.exit(1)
+        print("[ERROR] No valid local PPIs found to group. Exiting."); sys.exit(1)
 
-    # ── Beam-blockage: precompute once, reused by all workers via fork ────────
-    print("Precomputing beam-blockage (once per day)...")
-    _b = io.BytesIO(fs.cat(windows[0][0]))
-    _d = open_iris_dtree(_b, decode_hclass=False)
+    # ── 2. Precompute Beam-Blockage (Using local file) ───────────────────────
+    print("\nPrecomputing beam-blockage (once per day)...")
+    _d = open_iris_dtree(windows[0][0], decode_hclass=False)
     _s = _d["/sweep_0"]
-    print(_s["PHIDP"])
 
     radar_alt_i = float(_d["/"]["altitude"].values)
     radar_lon_i = float(_d["/"]["longitude"].values)
@@ -670,138 +682,91 @@ if __name__ == "__main__":
     precomp_CBB, precomp_lon, precomp_lat, precomp_alt = precompute_beam_blockage(
         _s, (radar_lon_i, radar_lat_i, radar_alt_i), rastercoords, rastervalues
     )
-    del _b, _d, _s
+    del _d, _s
+
+    global GLOBAL_CBB, GLOBAL_LON, GLOBAL_LAT, GLOBAL_ALT, GLOBAL_DF_GAUGES
+    GLOBAL_CBB = precomp_CBB
+    GLOBAL_LON = precomp_lon
+    GLOBAL_LAT = precomp_lat
+    GLOBAL_ALT = precomp_alt
 
     max_range_deg = 150.0 / 111.0
     min_lat = radar_lat_i - max_range_deg;  max_lat = radar_lat_i + max_range_deg
     min_lon = radar_lon_i - max_range_deg;  max_lon = radar_lon_i + max_range_deg
 
-    # ── Process all windows in parallel ──────────────────────────────────────
+    # ── 3. DOWNLOAD ALL GAUGE DATA FOR THE ENTIRE DAY UPFRONT ────────────────
+    print("\n🌐 Querying Socrata API for the full day's gauge records (1 Single Request)...")
+    first_window_ts = parse_timestamp_from_path(windows[0][0])
+    day_start = first_window_ts.replace(hour=0, minute=0, second=0)
+    day_end   = first_window_ts.replace(hour=23, minute=59, second=59)
 
+    try:
+        df_all_gauges = download_data(day_start, day_end, min_lat, max_lat, min_lon, max_lon)
+        if df_all_gauges is not None and not df_all_gauges.empty:
+            for col in ["valorobservado", "latitud", "longitud"]:
+                df_all_gauges[col] = pd.to_numeric(df_all_gauges[col], errors="coerce")
+            df_all_gauges = df_all_gauges.dropna(subset=["valorobservado","latitud","longitud"])
+            df_all_gauges["parsed_dt"] = pd.to_datetime(df_all_gauges["fechaobservacion"]).dt.tz_localize('UTC')
+            print(f"✅ Downloaded {len(df_all_gauges)} absolute gauge points successfully.")
+        else:
+            print("[WARN] Socrata API returned no measurements for this entire day.")
+            df_all_gauges = pd.DataFrame()
+    except Exception as e:
+        print(f"❌ Critical error querying global gauge dataset: {e}")
+        df_all_gauges = pd.DataFrame()
+
+    GLOBAL_DF_GAUGES = df_all_gauges
+
+    # ── 4. Process all WINDOWS in parallel (Pure Disk I/O, No Network Stops) ──
+    WORKERS = 6
+    args_list = [(w_idx, len(windows), window) for w_idx, window in enumerate(windows)]
     all_pairs = []
+    print(f"\n🚀 Launching {WORKERS} parallel workers to process {len(windows)} windows...")
 
-    for w_idx, window in enumerate(windows):
-        window_ts     = parse_timestamp_from_path(window[0])
-        window_end_ts = window_ts + dt.timedelta(minutes=10)
-        ts_label      = window_ts.strftime("%Y%m%d_%H%M%S")
-        print(f"\n── Window {w_idx+1}/{len(windows)} : {window_ts.isoformat()} ──")
+    with ProcessPoolExecutor(max_workers=WORKERS) as ex:
+        futures = {ex.submit(process_window, a): a for a in args_list}
+        
+        for fut in as_completed(futures):
+            try:
+                matched_df = fut.result()
+                if matched_df is not None and not matched_df.empty:
+                    all_pairs.append(matched_df)
+            except Exception as e:
+                print(f"  [CRITICAL ERROR] Worker failed: {e}")
 
-        # First PPI: serial (need swp/dtree/site for NetCDF coords)
-        try:
-            first_res, ref_swp, ref_dtree, ref_site = R_per_sweep_1st(
-                window[0], precomp_CBB, precomp_lon, precomp_lat, precomp_alt
-            )
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"  [ERROR] First PPI failed: {e}. Skipping window."); continue
+    # ── 5. Daily CSV & Metrics ───────────────────────────────────────────────
+    if all_pairs:
+        df_all   = pd.concat(all_pairs, ignore_index=True)
+        csv_name = (f"2025{str(month).zfill(2)}{str(day).zfill(2)}"
+                    f"_validation2_pairs_BAR.csv")
+        df_all.to_csv(csv_name, index=False)
+        print(f"\nValidation CSV → {csv_name}  ({len(df_all)} rows)")
 
-        shape = first_res["R_Z"].shape
-        acc   = {name: np.zeros(shape, dtype=np.float32) for name in ESTIMATOR_NAMES}
-        for name in ESTIMATOR_NAMES:
-            acc[name] += np.nan_to_num(first_res[name], nan=0.0) * (5.0 / 60.0)
-        del first_res
-
-        # Remaining PPIs: parallel
-        remaining = window[1:]
-        if remaining:
-            args_list = [(p, precomp_CBB, precomp_lon, precomp_lat, precomp_alt)
-                         for p in remaining]
-            with ProcessPoolExecutor(max_workers=WORKERS) as ex:
-                futures = {ex.submit(R_per_sweep, a): a[0] for a in args_list}
-                for fut in as_completed(futures):
-                    path = futures[fut]
-                    try:
-                        res = fut.result()
-                        for name in ESTIMATOR_NAMES:
-                            acc[name] += np.nan_to_num(res[name], nan=0.0) * (5.0/60.0)
-                        del res
-                        print(f"  [OK] {path.split('/')[-1]}")
-                    except Exception as e:
-                        print(f"  [ERR] {path.split('/')[-1]}: {e}")
-
-        gc.collect()   # once per window, not inside workers
-
-        # ── Save 10-min NetCDF ────────────────────────────────────────────────
-        ds_10min = xr.Dataset(
-            {name: (ref_swp["DBZH"].dims, acc[name]) for name in ESTIMATOR_NAMES},
-            coords=ref_swp["DBZH"].coords,
-        )
-        ds_10min.attrs.update({
-            "window_start": window_ts.isoformat(),
-            "window_end":   window_end_ts.isoformat(),
-            "n_ppis":       len(window),
-            "sweep_mode":   str(ref_swp["sweep_mode"].values),
-        })
-        ds_10min.coords["longitude"] = ref_dtree["longitude"].values
-        ds_10min.coords["latitude"]  = ref_dtree["latitude"].values
-        ds_10min.coords["altitude"]  = ref_dtree["altitude"].values
-
-        nc_name = (f"{ts_label}_QPE_10min_BAR.nc")
-        ds_10min.to_netcdf(nc_name)
-        print(f"  Saved → {nc_name}")
-
-        # ── Gauge download ────────────────────────────────────────────────────
-        try:
-            df_gauge = download_data(window_ts, window_end_ts,
-                                     min_lat, max_lat, min_lon, max_lon)
-        except Exception as e:
-            print(f"  [WARN] Gauge download failed: {e}"); continue
-
-        if df_gauge.empty:
-            print("  [INFO] No gauge data."); continue
-
-        for col in ["valorobservado", "latitud", "longitud"]:
-            df_gauge[col] = pd.to_numeric(df_gauge[col], errors="coerce")
-        df_gauge = df_gauge.dropna(subset=["valorobservado","latitud","longitud"])
-        if df_gauge.empty: continue
-
-        gauge_10min = (df_gauge
-            .groupby(["codigoestacion","latitud","longitud"], as_index=False)
-            ["valorobservado"].sum()
-            .rename(columns={"valorobservado": "acumulado_10min"}))
-
-        # Crop to 150 km
-        range_vals = ref_swp["range"].values
-        rmask = range_vals <= 150_000
-        acc_crop  = {name: acc[name][:, rmask] for name in ESTIMATOR_NAMES}
-        lon_crop  = precomp_lon[:, rmask]
-        lat_crop  = precomp_lat[:, rmask]
-
-        matched = match_radar_to_gauges(acc_crop, lon_crop, lat_crop, gauge_10min)
-        matched["window_start"] = window_ts.isoformat()
-        all_pairs.append(matched)
-        print(f"  Matched {len(matched)} gauge stations.")
-
-    # ── Daily CSV ─────────────────────────────────────────────────────────────
-    if not all_pairs:
-        print("\n[WARN] No pairs collected."); sys.exit(0)
-
-    df_all   = pd.concat(all_pairs, ignore_index=True)
-    csv_name = (f"2025{str(month).zfill(2)}{str(day).zfill(2)}"
-                f"_validation_pairs_BAR.csv")
-    df_all.to_csv(csv_name, index=False)
-    print(f"\nValidation CSV → {csv_name}  ({len(df_all)} rows)")
-
-    # ── Summary metrics per estimator ─────────────────────────────────────────
-    df_v = df_all.dropna(subset=["gauge_mm"] + ESTIMATOR_NAMES)
-    df_v = df_v[df_v["gauge_mm"] >= 0]
-    if len(df_v) > 1:
-        g = df_v["gauge_mm"].values
-        print(f"\n{'─'*58}")
-        print(f"  {'Estimator':<14} {'RMSE':>8} {'BIAS':>8} {'Pearson r':>10}  n={len(df_v)}")
-        print(f"{'─'*58}")
-        for name in ESTIMATOR_NAMES:
-            r_arr = df_v[name].values
-            ok    = np.isfinite(r_arr) & np.isfinite(g)
-            if ok.sum() < 2:
-                print(f"  {name:<14}  — insufficient data"); continue
-            rmse = np.sqrt(np.mean((r_arr[ok] - g[ok])**2))
-            bias = np.mean(r_arr[ok] - g[ok])
-            rho  = pearsonr(g[ok], r_arr[ok])[0] if ok.sum() > 2 else np.nan
-            print(f"  {name:<14} {rmse:8.4f} {bias:8.4f} {rho:10.4f}")
-        print(f"{'─'*58}")
+        df_v = df_all.dropna(subset=["gauge_mm"] + ESTIMATOR_NAMES)
+        df_v = df_v[df_v["gauge_mm"] >= 0]
+        if len(df_v) > 1:
+            g = df_v["gauge_mm"].values
+            print(f"\n{'─'*58}")
+            print(f"  {'Estimator':<14} {'RMSE':>8} {'BIAS':>8} {'Pearson r':>10}  n={len(df_v)}")
+            print(f"{'─'*58}")
+            for name in ESTIMATOR_NAMES:
+                r_arr = df_v[name].values
+                ok    = np.isfinite(r_arr) & np.isfinite(g)
+                if ok.sum() < 2:
+                    print(f"  {name:<14}  — insufficient data"); continue
+                rmse = np.sqrt(np.mean((r_arr[ok] - g[ok])**2))
+                bias = np.mean(r_arr[ok] - g[ok])
+                rho  = pearsonr(g[ok], r_arr[ok])[0] if ok.sum() > 2 else np.nan
+                print(f"  {name:<14} {rmse:8.4f} {bias:8.4f} {rho:10.4f}")
+            print(f"{'─'*58}")
+        else:
+            print("[INFO] Not enough valid pairs for metrics.")
     else:
-        print("[INFO] Not enough valid pairs for metrics.")
+        print("\n[WARN] No pairs collected.")
+
+    # ── 6. CACHE CLEANUP (Prevents your local drive from bloating) ───────────
+    print("\n🧹 Cleaning up daily local radar file cache...")
+    if os.path.exists("./radar_cache"):
+        shutil.rmtree("./radar_cache")
 
     print("\nDone.")
